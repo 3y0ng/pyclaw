@@ -20,6 +20,7 @@ import {
 } from "./commands-info.js";
 import { handleModelsCommand } from "./commands-models.js";
 import { handlePluginCommand } from "./commands-plugin.js";
+import { authorizePyreelCommand } from "./commands-pyreel-rbac.js";
 import {
   handleAbortTrigger,
   handleActivationCommand,
@@ -189,6 +190,22 @@ export async function handleCommands(params: HandleCommandsParams): Promise<Comm
     surface: params.command.surface,
     commandSource: params.ctx.CommandSource,
   });
+
+  const pyreelAuthorization = await authorizePyreelCommand({
+    workspaceRoot: params.workspaceDir,
+    channel: params.command.channel,
+    channelId: params.command.channelId,
+    senderId: params.command.senderId,
+    rawBodyNormalized: params.command.commandBodyNormalized,
+  });
+  if (pyreelAuthorization && !pyreelAuthorization.allowed) {
+    return {
+      shouldContinue: false,
+      reply: {
+        text: `❌ /pyreel requires ${pyreelAuthorization.requiredRole} role (current: ${pyreelAuthorization.actualRole}).`,
+      },
+    };
+  }
 
   for (const handler of HANDLERS) {
     const result = await handler(params, allowTextCommands);
