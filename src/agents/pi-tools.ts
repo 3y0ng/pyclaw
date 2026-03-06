@@ -21,7 +21,9 @@ import { createOpenClawTools } from "./openclaw-tools.js";
 import { wrapToolWithAbortSignal } from "./pi-tools.abort.js";
 import { wrapToolWithBeforeToolCallHook } from "./pi-tools.before-tool-call.js";
 import {
+  isPyreelToolAllowed,
   isToolAllowedByPolicies,
+  PYREEL_BLOCKED_TOOL_MESSAGE,
   resolveEffectiveToolPolicy,
   resolveGroupToolPolicy,
   resolveSubagentToolPolicy,
@@ -85,6 +87,40 @@ function applyMessageProviderToolPolicy(
   }
   const deniedSet = new Set(deniedTools);
   return tools.filter((tool) => !deniedSet.has(tool.name));
+}
+
+function wrapToolWithBlockedMessage(tool: AnyAgentTool, message: string): AnyAgentTool {
+  return {
+    ...tool,
+    execute: async () => {
+      throw new Error(message);
+    },
+  };
+}
+
+function applyPyreelToolPolicy(params: {
+  tools: AnyAgentTool[];
+  config?: OpenClawConfig;
+  explicitAllowlist?: string[];
+}): AnyAgentTool[] {
+  if (params.config?.pyreel?.mode !== true) {
+    return params.tools;
+  }
+  return params.tools.flatMap((tool) => {
+    if (
+      isPyreelToolAllowed({
+        config: params.config,
+        name: tool.name,
+        explicitAllowlist: params.explicitAllowlist,
+      })
+    ) {
+      return [tool];
+    }
+    if (tool.name === "exec" || tool.name === "process") {
+      return [wrapToolWithBlockedMessage(tool, PYREEL_BLOCKED_TOOL_MESSAGE)];
+    }
+    return [];
+  });
 }
 
 function isApplyPatchAllowedForModel(params: {
@@ -546,9 +582,25 @@ export function createOpenClawCodingTools(options?: {
   const withAbort = options?.abortSignal
     ? withHooks.map((tool) => wrapToolWithAbortSignal(tool, options.abortSignal))
     : withHooks;
+  const explicitAllowlist = collectExplicitAllowlist([
+    profilePolicyWithAlsoAllow,
+    providerProfilePolicyWithAlsoAllow,
+    globalPolicy,
+    globalProviderPolicy,
+    agentPolicy,
+    agentProviderPolicy,
+    groupPolicy,
+    sandbox?.tools,
+    subagentPolicy,
+  ]);
+  const pyreelFiltered = applyPyreelToolPolicy({
+    tools: withAbort,
+    config: options?.config,
+    explicitAllowlist,
+  });
 
   // NOTE: Keep canonical (lowercase) tool names here.
   // pi-ai's Anthropic OAuth transport remaps tool names to Claude Code-style names
   // on the wire and maps them back for tool dispatch.
-  return withAbort;
+  return pyreelFiltered;
 }

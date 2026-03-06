@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   filterToolsByPolicy,
+  isPyreelToolAllowed,
   isToolAllowedByPolicyName,
   resolveSubagentToolPolicy,
 } from "./pi-tools.policy.js";
@@ -174,5 +175,42 @@ describe("resolveSubagentToolPolicy depth awareness", () => {
     const policy = resolveSubagentToolPolicy(leafCfg);
     // Default depth=1, maxSpawnDepth=1 → leaf
     expect(isToolAllowedByPolicyName("sessions_spawn", policy)).toBe(false);
+  });
+});
+
+describe("Pyreel tool policy", () => {
+  it("always denies exec and process in pyreel mode", () => {
+    const config = { pyreel: { mode: true } } as OpenClawConfig;
+    expect(isPyreelToolAllowed({ config, name: "exec", explicitAllowlist: ["exec"] })).toBe(false);
+    expect(isPyreelToolAllowed({ config, name: "process", explicitAllowlist: ["*"] })).toBe(false);
+  });
+
+  it("denies non-connector network tools in pyreel mode", () => {
+    const config = { pyreel: { mode: true } } as OpenClawConfig;
+    expect(isPyreelToolAllowed({ config, name: "web_fetch" })).toBe(false);
+    expect(isPyreelToolAllowed({ config, name: "browser" })).toBe(false);
+  });
+
+  it("allows connector network tools only when explicitly allowlisted", () => {
+    const config = { pyreel: { mode: true } } as OpenClawConfig;
+    expect(
+      isPyreelToolAllowed({
+        config,
+        name: "connector_web_fetch",
+      }),
+    ).toBe(false);
+    expect(
+      isPyreelToolAllowed({
+        config,
+        name: "connector_web_fetch",
+        explicitAllowlist: ["connector_*"],
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps behavior unchanged when pyreel mode is disabled", () => {
+    const config = { pyreel: { mode: false } } as OpenClawConfig;
+    expect(isPyreelToolAllowed({ config, name: "exec" })).toBe(true);
+    expect(isPyreelToolAllowed({ config, name: "web_fetch" })).toBe(true);
   });
 });

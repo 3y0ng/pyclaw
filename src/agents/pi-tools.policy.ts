@@ -12,6 +12,70 @@ import { pickSandboxToolPolicy } from "./sandbox-tool-policy.js";
 import type { SandboxToolPolicy } from "./sandbox.js";
 import { expandToolGroups, normalizeToolName } from "./tool-policy.js";
 
+export const PYREEL_BLOCKED_TOOL_MESSAGE = "Tool blocked in Pyreel mode.";
+
+const PYREEL_ALWAYS_DENY = new Set(["exec", "process"]);
+
+const PYREEL_NETWORK_TOOL_PATTERNS = [
+  /^web(?:$|[_:])/, // core web_* tools
+  /^browser$/, // browser automation is network-capable
+  /(?:^|[_:])network(?:$|[_:])/, // plugin network tools
+  /(?:^|[_:])https?(?:$|[_:])/, // plugin http tools
+  /(?:^|[_:])fetch(?:$|[_:])/, // plugin fetch-style tools
+  /(?:^|[_:])search(?:$|[_:])/, // plugin search tools
+];
+
+function isConnectorToolName(toolName: string): boolean {
+  return (
+    toolName === "nodes" ||
+    toolName.startsWith("connector") ||
+    toolName.includes("connector_") ||
+    toolName.includes("_connector")
+  );
+}
+
+function isPyreelRestrictedNetworkToolName(toolName: string): boolean {
+  if (PYREEL_ALWAYS_DENY.has(toolName)) {
+    return true;
+  }
+  return PYREEL_NETWORK_TOOL_PATTERNS.some((pattern) => pattern.test(toolName));
+}
+
+function isToolMatchedByExplicitAllowlist(name: string, explicitAllowlist?: string[]): boolean {
+  if (!Array.isArray(explicitAllowlist) || explicitAllowlist.length === 0) {
+    return false;
+  }
+  const allow = compileGlobPatterns({
+    raw: expandToolGroups(explicitAllowlist),
+    normalize: normalizeToolName,
+  });
+  if (allow.length === 0) {
+    return false;
+  }
+  return matchesAnyGlobPattern(name, allow);
+}
+
+export function isPyreelToolAllowed(params: {
+  config?: OpenClawConfig;
+  name: string;
+  explicitAllowlist?: string[];
+}): boolean {
+  if (params.config?.pyreel?.mode !== true) {
+    return true;
+  }
+  const normalized = normalizeToolName(params.name);
+  if (!isPyreelRestrictedNetworkToolName(normalized)) {
+    return true;
+  }
+  if (PYREEL_ALWAYS_DENY.has(normalized)) {
+    return false;
+  }
+  if (!isConnectorToolName(normalized)) {
+    return false;
+  }
+  return isToolMatchedByExplicitAllowlist(normalized, params.explicitAllowlist);
+}
+
 function makeToolPolicyMatcher(policy: SandboxToolPolicy) {
   const deny = compileGlobPatterns({
     raw: expandToolGroups(policy.deny ?? []),
