@@ -665,6 +665,50 @@ function resolveConfigForRead(
   };
 }
 
+function parseEnvBooleanFlag(raw: string | undefined): boolean | null {
+  if (raw === undefined) {
+    return null;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "1") {
+    return true;
+  }
+  if (normalized === "" || normalized === "0") {
+    return false;
+  }
+  return null;
+}
+
+function normalizePyreelConfig(config: OpenClawConfig, env: NodeJS.ProcessEnv): void {
+  const modeFromEnv = parseEnvBooleanFlag(env.PYREEL_MODE);
+  const ingestFromEnv = parseEnvBooleanFlag(env.PYREEL_FEATURE_INGEST);
+  const remixFromEnv = parseEnvBooleanFlag(env.PYREEL_FEATURE_REMIX);
+  const exportFromEnv = parseEnvBooleanFlag(env.PYREEL_FEATURE_EXPORT);
+
+  const hasEnvPyreel =
+    modeFromEnv !== null ||
+    ingestFromEnv !== null ||
+    remixFromEnv !== null ||
+    exportFromEnv !== null;
+
+  if (!hasEnvPyreel) {
+    return;
+  }
+
+  const existingPyreel = config.pyreel ?? {};
+  const existingFeatures = existingPyreel.features ?? {};
+
+  config.pyreel = {
+    ...existingPyreel,
+    mode: modeFromEnv ?? existingPyreel.mode ?? false,
+    features: {
+      ...existingFeatures,
+      ingest: ingestFromEnv ?? existingFeatures.ingest ?? false,
+      remix: remixFromEnv ?? existingFeatures.remix ?? false,
+      export: exportFromEnv ?? existingFeatures.export ?? false,
+    },
+  };
+}
 type ReadConfigFileSnapshotInternalResult = {
   snapshot: ConfigFileSnapshot;
   envSnapshotForRestore?: Record<string, string | undefined>;
@@ -743,6 +787,7 @@ export function createConfigIO(overrides: ConfigIoDeps = {}) {
           ),
         ),
       );
+      normalizePyreelConfig(cfg, deps.env);
       normalizeConfigPaths(cfg);
       normalizeExecSafeBinProfilesInConfig(cfg);
 

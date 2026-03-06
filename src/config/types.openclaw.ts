@@ -28,6 +28,17 @@ import type { SecretsConfig } from "./types.secrets.js";
 import type { SkillsConfig } from "./types.skills.js";
 import type { ToolsConfig } from "./types.tools.js";
 
+export type PyreelConfig = {
+  /** Enables Pyreel mode when true. Default is off. */
+  mode?: boolean;
+  /** Optional Pyreel feature-level flags. */
+  features?: {
+    ingest?: boolean;
+    remix?: boolean;
+    export?: boolean;
+  };
+};
+
 export type OpenClawConfig = {
   meta?: {
     /** Last OpenClaw version that wrote this config. */
@@ -91,6 +102,7 @@ export type OpenClawConfig = {
       avatar?: string;
     };
   };
+  pyreel?: PyreelConfig;
   secrets?: SecretsConfig;
   skills?: SkillsConfig;
   plugins?: PluginsConfig;

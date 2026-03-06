@@ -336,6 +336,20 @@ export const OpenClawSchema = z
       })
       .strict()
       .optional(),
+    pyreel: z
+      .object({
+        mode: z.boolean().optional(),
+        features: z
+          .object({
+            ingest: z.boolean().optional(),
+            remix: z.boolean().optional(),
+            export: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
     secrets: SecretsConfigSchema,
     auth: z
       .object({
