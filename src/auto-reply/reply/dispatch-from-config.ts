@@ -1,4 +1,4 @@
-import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { loadSessionStore, resolveStorePath, type SessionEntry } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
@@ -262,7 +262,13 @@ export async function dispatchReplyFromConfig(params: {
   markProcessing();
 
   try {
-    const pyreelDecision = routePyreelMessage({ ctx, cfg });
+    const pyreelAgentId = resolveSessionAgentId({ sessionKey: ctx.SessionKey, config: cfg });
+    const pyreelWorkspaceDir = resolveAgentWorkspaceDir(cfg, pyreelAgentId);
+    const pyreelDecision = await routePyreelMessage({
+      ctx,
+      cfg,
+      workspaceDir: pyreelWorkspaceDir,
+    });
     logVerbose(
       `[pyreel-router] ${JSON.stringify({
         path: pyreelDecision.path,
