@@ -1624,4 +1624,51 @@ describe("dispatchReplyFromConfig", () => {
     expect(blockReplySentTexts).not.toContain("Reasoning:\n_thinking..._");
     expect(blockReplySentTexts).toContain("The answer is 42");
   });
+
+  it("blocks non-/pyreel input in pyreel mode before agent reply execution", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({ BodyForCommands: "hello from channel" });
+    const replyResolver = vi.fn(async () => ({ text: "should not run" }) as ReplyPayload);
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      dispatcher,
+      replyResolver,
+    });
+
+    expect(replyResolver).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Pyreel mode: use /pyreel help"),
+      }),
+    );
+  });
+
+  it("handles /pyreel commands from dispatch shared path", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({ BodyForCommands: "/pyreel status" });
+    const replyResolver = vi.fn(async () => ({ text: "should not run" }) as ReplyPayload);
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg: {
+        pyreel: {
+          mode: true,
+          features: { ingest: true, remix: false, export: true },
+        },
+      } as OpenClawConfig,
+      dispatcher,
+      replyResolver,
+    });
+
+    expect(replyResolver).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Pyreel status: ingest=on, remix=off, export=on.",
+      }),
+    );
+  });
 });

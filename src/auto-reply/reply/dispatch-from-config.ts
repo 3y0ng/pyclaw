@@ -26,6 +26,7 @@ import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./abort.js";
 import { shouldBypassAcpDispatchForCommand, tryDispatchAcpReply } from "./dispatch-acp.js";
 import { shouldSkipDuplicateInbound } from "./inbound-dedupe.js";
+import { routePyreelMessage } from "./pyreel-router.js";
 import type { ReplyDispatcher, ReplyDispatchKind } from "./reply-dispatcher.js";
 import { shouldSuppressReasoningPayload } from "./reply-payloads.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
@@ -261,6 +262,52 @@ export async function dispatchReplyFromConfig(params: {
   markProcessing();
 
   try {
+    const pyreelDecision = routePyreelMessage({ ctx, cfg });
+    logVerbose(
+      `[pyreel-router] ${JSON.stringify({
+        path: pyreelDecision.path,
+        reason: pyreelDecision.reason,
+        matchedCommand: pyreelDecision.matchedCommand,
+        deniedReason: pyreelDecision.deniedReason,
+      })}`,
+    );
+    if (pyreelDecision.path === "block") {
+      const payload = {
+        text: pyreelDecision.replyText,
+      } satisfies ReplyPayload;
+      let queuedFinal = false;
+      let routedFinalCount = 0;
+      if (shouldRouteToOriginating && originatingChannel && originatingTo) {
+        const result = await routeReply({
+          payload,
+          channel: originatingChannel,
+          to: originatingTo,
+          sessionKey: ctx.SessionKey,
+          accountId: ctx.AccountId,
+          threadId: ctx.MessageThreadId,
+          cfg,
+          isGroup,
+          groupId,
+        });
+        queuedFinal = result.ok;
+        if (result.ok) {
+          routedFinalCount += 1;
+        }
+        if (!result.ok) {
+          logVerbose(
+            `dispatch-from-config: route-reply (pyreel-router) failed: ${result.error ?? "unknown error"}`,
+          );
+        }
+      } else {
+        queuedFinal = dispatcher.sendFinalReply(payload);
+      }
+      const counts = dispatcher.getQueuedCounts();
+      counts.final += routedFinalCount;
+      recordProcessed("completed", { reason: "pyreel_router_block" });
+      markIdle("message_completed");
+      return { queuedFinal, counts };
+    }
+
     const fastAbort = await tryFastAbortFromMessage({ ctx, cfg });
     if (fastAbort.handled) {
       const payload = {
