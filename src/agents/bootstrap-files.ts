@@ -8,6 +8,8 @@ import {
   resolveBootstrapTotalMaxChars,
 } from "./pi-embedded-helpers.js";
 import {
+  DEFAULT_SOUL_FILENAME,
+  DEFAULT_SOUL_PYREEL_FILENAME,
   filterBootstrapFilesForSession,
   loadWorkspaceBootstrapFiles,
   type WorkspaceBootstrapFile,
@@ -42,6 +44,22 @@ function sanitizeBootstrapFiles(
     sanitized.push({ ...file, path: pathValue });
   }
   return sanitized;
+}
+
+function applyPyreelSoulSelection(params: {
+  files: WorkspaceBootstrapFile[];
+  pyreelModeEnabled?: boolean;
+}): WorkspaceBootstrapFile[] {
+  const pyreelModeEnabled = params.pyreelModeEnabled === true;
+  return params.files.filter((file) => {
+    if (file.name === DEFAULT_SOUL_PYREEL_FILENAME) {
+      return pyreelModeEnabled;
+    }
+    if (file.name === DEFAULT_SOUL_FILENAME) {
+      return !pyreelModeEnabled;
+    }
+    return true;
+  });
 }
 
 function applyContextModeFilter(params: {
@@ -79,7 +97,10 @@ export async function resolveBootstrapFilesForRun(params: {
       })
     : await loadWorkspaceBootstrapFiles(params.workspaceDir);
   const bootstrapFiles = applyContextModeFilter({
-    files: filterBootstrapFilesForSession(rawFiles, sessionKey),
+    files: applyPyreelSoulSelection({
+      files: filterBootstrapFilesForSession(rawFiles, sessionKey),
+      pyreelModeEnabled: params.config?.pyreel?.mode === true,
+    }),
     contextMode: params.contextMode,
     runKind: params.runKind,
   });
