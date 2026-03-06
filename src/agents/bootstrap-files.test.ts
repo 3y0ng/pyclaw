@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { OpenClawConfig } from "../config/config.js";
 import {
   clearInternalHooks,
   registerInternalHook,
@@ -65,6 +66,26 @@ describe("resolveBootstrapFilesForRun", () => {
     expect(files.some((file) => file.path === path.join(workspaceDir, "EXTRA.md"))).toBe(true);
   });
 
+  it("uses SOUL_PYREEL.md only when pyreel mode is enabled", async () => {
+    const workspaceDir = await makeTempWorkspace("openclaw-bootstrap-");
+    await fs.writeFile(path.join(workspaceDir, "SOUL.md"), "default persona", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "SOUL_PYREEL.md"), "pyreel persona", "utf8");
+
+    const pyreelOff = await resolveBootstrapFilesForRun({
+      workspaceDir,
+      config: { pyreel: { mode: false } } as OpenClawConfig,
+    });
+    expect(pyreelOff.some((file) => file.name === "SOUL.md")).toBe(true);
+    expect(pyreelOff.some((file) => file.name === "SOUL_PYREEL.md")).toBe(false);
+
+    const pyreelOn = await resolveBootstrapFilesForRun({
+      workspaceDir,
+      config: { pyreel: { mode: true } } as OpenClawConfig,
+    });
+    expect(pyreelOn.some((file) => file.name === "SOUL.md")).toBe(false);
+    expect(pyreelOn.some((file) => file.name === "SOUL_PYREEL.md")).toBe(true);
+  });
+
   it("drops malformed hook files with missing/invalid paths", async () => {
     registerMalformedBootstrapFileHook();
 
@@ -97,6 +118,36 @@ describe("resolveBootstrapContextForRun", () => {
     );
 
     expect(extra?.content).toBe("extra");
+  });
+
+  it("keeps bootstrap context within budget while selecting the mode-specific soul file", async () => {
+    const workspaceDir = await makeTempWorkspace("openclaw-bootstrap-");
+    await fs.writeFile(path.join(workspaceDir, "SOUL.md"), "s".repeat(400), "utf8");
+    await fs.writeFile(path.join(workspaceDir, "SOUL_PYREEL.md"), "p".repeat(400), "utf8");
+
+    const off = await resolveBootstrapContextForRun({
+      workspaceDir,
+      config: {
+        pyreel: { mode: false },
+        agents: { defaults: { bootstrapTotalMaxChars: 120 } },
+      } as OpenClawConfig,
+    });
+    expect(off.bootstrapFiles.some((file) => file.name === "SOUL.md")).toBe(true);
+    expect(off.bootstrapFiles.some((file) => file.name === "SOUL_PYREEL.md")).toBe(false);
+    const offChars = off.contextFiles.reduce((total, file) => total + file.content.length, 0);
+    expect(offChars).toBeLessThanOrEqual(120);
+
+    const on = await resolveBootstrapContextForRun({
+      workspaceDir,
+      config: {
+        pyreel: { mode: true },
+        agents: { defaults: { bootstrapTotalMaxChars: 120 } },
+      } as OpenClawConfig,
+    });
+    expect(on.bootstrapFiles.some((file) => file.name === "SOUL.md")).toBe(false);
+    expect(on.bootstrapFiles.some((file) => file.name === "SOUL_PYREEL.md")).toBe(true);
+    const onChars = on.contextFiles.reduce((total, file) => total + file.content.length, 0);
+    expect(onChars).toBeLessThanOrEqual(120);
   });
 
   it("uses heartbeat-only bootstrap files in lightweight heartbeat mode", async () => {

@@ -169,6 +169,22 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("Do not copy yourself or change system prompts");
   });
 
+  it("includes Pyreel operator guidance only when pyreel mode is enabled", () => {
+    const pyreelOn = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      pyreelModeEnabled: true,
+    });
+    expect(pyreelOn).toContain("Pyreel mode operator policy");
+    expect(pyreelOn).toContain("Pyreel mode safety boundaries");
+
+    const pyreelOff = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      pyreelModeEnabled: false,
+    });
+    expect(pyreelOff).not.toContain("Pyreel mode operator policy");
+    expect(pyreelOff).not.toContain("Pyreel mode safety boundaries");
+  });
+
   it("includes voice hint when provided", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
@@ -520,6 +536,17 @@ describe("buildAgentSystemPrompt", () => {
         { path: "./SOUL.md", content: "Persona" },
         { path: "dir\\SOUL.md", content: "Persona Windows" },
       ],
+    });
+
+    expect(prompt).toContain(
+      "If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; follow its guidance unless higher-priority instructions override it.",
+    );
+  });
+
+  it("adds SOUL guidance when SOUL_PYREEL.md is present", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      contextFiles: [{ path: "SOUL_PYREEL.md", content: "Pyreel Persona" }],
     });
 
     expect(prompt).toContain(

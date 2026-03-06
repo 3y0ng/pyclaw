@@ -824,6 +824,7 @@ export async function runEmbeddedAttempt(
       contextFiles,
       bootstrapTruncationWarningLines: bootstrapPromptWarning.lines,
       memoryCitationsMode: params.config?.memory?.citations,
+      pyreelModeEnabled: params.config?.pyreel?.mode === true,
     });
     const systemPromptReport = buildSystemPromptReport({
       source: "run",

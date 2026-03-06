@@ -38,6 +38,17 @@ describe("loadExtraBootstrapFiles", () => {
     expect(files[0]?.content).toBe("tools");
   });
 
+  it("loads SOUL_PYREEL.md via explicit pattern", async () => {
+    const workspaceDir = await createWorkspaceDir("pyreel");
+    await fs.writeFile(path.join(workspaceDir, "SOUL_PYREEL.md"), "pyreel soul", "utf-8");
+
+    const files = await loadExtraBootstrapFiles(workspaceDir, ["SOUL_PYREEL.md"]);
+
+    expect(files).toHaveLength(1);
+    expect(files[0]?.name).toBe("SOUL_PYREEL.md");
+    expect(files[0]?.content).toBe("pyreel soul");
+  });
+
   it("keeps path-traversal attempts outside workspace excluded", async () => {
     const rootDir = await createWorkspaceDir("root");
     const workspaceDir = path.join(rootDir, "workspace");

@@ -7,6 +7,7 @@ import {
   DEFAULT_AGENTS_FILENAME,
   DEFAULT_BOOTSTRAP_FILENAME,
   DEFAULT_IDENTITY_FILENAME,
+  DEFAULT_SOUL_PYREEL_FILENAME,
   DEFAULT_MEMORY_ALT_FILENAME,
   DEFAULT_MEMORY_FILENAME,
   DEFAULT_TOOLS_FILENAME,
@@ -64,6 +65,7 @@ function expectSubagentAllowedBootstrapNames(files: WorkspaceBootstrapFile[]) {
   expect(names).toContain("AGENTS.md");
   expect(names).toContain("TOOLS.md");
   expect(names).toContain("SOUL.md");
+  expect(names).toContain("SOUL_PYREEL.md");
   expect(names).toContain("IDENTITY.md");
   expect(names).toContain("USER.md");
   expect(names).not.toContain("HEARTBEAT.md");
@@ -191,6 +193,20 @@ describe("loadWorkspaceBootstrapFiles", () => {
     expect(getMemoryEntries(files)).toHaveLength(0);
   });
 
+  it("includes SOUL_PYREEL.md entry when present", async () => {
+    const tempDir = await makeTempWorkspace("openclaw-workspace-");
+    await writeWorkspaceFile({
+      dir: tempDir,
+      name: DEFAULT_SOUL_PYREEL_FILENAME,
+      content: "pyreel",
+    });
+
+    const files = await loadWorkspaceBootstrapFiles(tempDir);
+    const pyreelSoul = files.find((file) => file.name === DEFAULT_SOUL_PYREEL_FILENAME);
+    expect(pyreelSoul?.missing).toBe(false);
+    expect(pyreelSoul?.content).toBe("pyreel");
+  });
+
   it("treats hardlinked bootstrap aliases as missing", async () => {
     if (process.platform === "win32") {
       return;
@@ -227,6 +243,7 @@ describe("filterBootstrapFilesForSession", () => {
   const mockFiles: WorkspaceBootstrapFile[] = [
     { name: "AGENTS.md", path: "/w/AGENTS.md", content: "", missing: false },
     { name: "SOUL.md", path: "/w/SOUL.md", content: "", missing: false },
+    { name: "SOUL_PYREEL.md", path: "/w/SOUL_PYREEL.md", content: "", missing: false },
     { name: "TOOLS.md", path: "/w/TOOLS.md", content: "", missing: false },
     { name: "IDENTITY.md", path: "/w/IDENTITY.md", content: "", missing: false },
     { name: "USER.md", path: "/w/USER.md", content: "", missing: false },
