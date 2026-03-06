@@ -4,8 +4,8 @@ import { routePyreelMessage } from "./pyreel-router.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 describe("routePyreelMessage", () => {
-  it("passes through when pyreel mode is disabled", () => {
-    const decision = routePyreelMessage({
+  it("passes through when pyreel mode is disabled", async () => {
+    const decision = await routePyreelMessage({
       ctx: buildTestCtx({ BodyForCommands: "hello" }),
       cfg: {} as OpenClawConfig,
     });
@@ -14,8 +14,8 @@ describe("routePyreelMessage", () => {
     expect(decision.reason).toBe("pyreel_mode_disabled");
   });
 
-  it("blocks non-/pyreel input when mode is enabled", () => {
-    const decision = routePyreelMessage({
+  it("blocks non-/pyreel input when mode is enabled", async () => {
+    const decision = await routePyreelMessage({
       ctx: buildTestCtx({ BodyForCommands: "hello" }),
       cfg: { pyreel: { mode: true } } as OpenClawConfig,
     });
@@ -24,8 +24,8 @@ describe("routePyreelMessage", () => {
     expect(decision.deniedReason).toBe("non_pyreel_input");
   });
 
-  it("handles /pyreel status from shared command path", () => {
-    const decision = routePyreelMessage({
+  it("handles /pyreel status from shared command path", async () => {
+    const decision = await routePyreelMessage({
       ctx: buildTestCtx({ BodyForCommands: "/pyreel status" }),
       cfg: {
         pyreel: { mode: true, features: { ingest: true, remix: false, export: true } },
@@ -41,8 +41,8 @@ describe("routePyreelMessage", () => {
     }
   });
 
-  it("denies disabled feature command", () => {
-    const decision = routePyreelMessage({
+  it("denies disabled feature command", async () => {
+    const decision = await routePyreelMessage({
       ctx: buildTestCtx({ BodyForCommands: "/pyreel remix" }),
       cfg: { pyreel: { mode: true, features: { remix: false } } } as OpenClawConfig,
     });

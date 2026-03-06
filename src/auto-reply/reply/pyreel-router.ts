@@ -1,11 +1,16 @@
 import type { OpenClawConfig } from "../../config/config.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import { parseSlashCommandOrNull } from "./commands-slash-parse.js";
+import {
+  executePyreelWorkflow,
+  type PyreelWorkflowAction,
+  type RestrictedPyreelModelRunner,
+} from "./pyreel-workflow.js";
 
 const PYREEL_HELP_TEXT =
-  "Pyreel mode: use /pyreel help, /pyreel status, /pyreel ingest, /pyreel remix, or /pyreel export.";
+  "Pyreel mode: use /pyreel help, /pyreel status, /pyreel ingest, /pyreel remix, /pyreel export, /pyreel brief, /pyreel plan, /pyreel research, /pyreel scripts, /pyreel report, or /pyreel next.";
 
-type PyreelCommand = "help" | "status" | "ingest" | "remix" | "export";
+type PyreelCommand = "help" | "status" | "ingest" | "remix" | "export" | PyreelWorkflowAction;
 
 type PyreelRouterPassthroughDecision = {
   path: "passthrough";
@@ -32,10 +37,21 @@ const resolveInboundText = (ctx: FinalizedMsgContext): string => {
 const featureEnabled = (cfg: OpenClawConfig, feature: "ingest" | "remix" | "export"): boolean =>
   cfg.pyreel?.features?.[feature] !== false;
 
-export function routePyreelMessage(params: {
+const WORKFLOW_ACTIONS = new Set<PyreelWorkflowAction>([
+  "brief",
+  "plan",
+  "research",
+  "scripts",
+  "report",
+  "next",
+]);
+
+export async function routePyreelMessage(params: {
   ctx: FinalizedMsgContext;
   cfg: OpenClawConfig;
-}): PyreelRouterDecision {
+  workspaceDir?: string;
+  restrictedModelRunner?: RestrictedPyreelModelRunner;
+}): Promise<PyreelRouterDecision> {
   const { ctx, cfg } = params;
   if (cfg.pyreel?.mode !== true) {
     return {
@@ -112,6 +128,35 @@ export function routePyreelMessage(params: {
       deniedReason: null,
       reason: "pyreel_mode_enforced",
       replyText: `Pyreel ${action} command received.`,
+    };
+  }
+
+  if (WORKFLOW_ACTIONS.has(action as PyreelWorkflowAction)) {
+    const workflowAction = action as PyreelWorkflowAction;
+    const workspaceDir = params.workspaceDir?.trim();
+    if (!workspaceDir) {
+      return {
+        path: "block",
+        matchedCommand: workflowAction,
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: `Pyreel ${workflowAction} requires a workspace directory.`,
+      };
+    }
+
+    const artifact = await executePyreelWorkflow({
+      action: workflowAction,
+      request: parsed.args,
+      workspaceDir,
+      runner: params.restrictedModelRunner,
+    });
+
+    return {
+      path: "block",
+      matchedCommand: workflowAction,
+      deniedReason: null,
+      reason: "pyreel_mode_enforced",
+      replyText: artifact.summary,
     };
   }
 
