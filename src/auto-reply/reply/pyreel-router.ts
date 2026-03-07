@@ -50,7 +50,6 @@ const PYREEL_HELP_TEXT =
 
 type PyreelCommand =
   | "help"
-  | "status"
   | "whoami"
   | "rbac"
   | PyreelRbacCommand
@@ -154,6 +153,10 @@ function pyreelWriteEnabled(cfg: OpenClawConfig, ctx: FinalizedMsgContext): bool
 
   const platformFlag = platformFlags[resolveSurface(ctx)];
   return platformFlag;
+}
+
+function isSafeChangeSetId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value);
 }
 
 function resolveConfirmationTtlSeconds(cfg: OpenClawConfig): number {
@@ -895,6 +898,16 @@ export async function routePyreelMessage(params: {
     }
 
     const [changesetId, confirmationCode] = tokens;
+    if (!isSafeChangeSetId(changesetId)) {
+      return {
+        path: "block",
+        matchedCommand: "apply",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: "ChangeSet apply failed: invalid_changeset_id.",
+      };
+    }
+
     const applyResult = await confirmAndApplyChangeSet({
       workspaceDir,
       changesetId,

@@ -318,7 +318,7 @@ export async function createDryRunChangeSet(params: {
     changesetId: id,
     at: createdAt,
     kind: "confirmation_issued",
-    metadata: { expiresAt: record.confirmation.expiresAt },
+    metadata: { expiresAt: record.confirmation?.expiresAt ?? "" },
   });
   return record;
 }
