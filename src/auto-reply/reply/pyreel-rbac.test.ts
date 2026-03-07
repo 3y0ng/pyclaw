@@ -18,6 +18,30 @@ afterEach(async () => {
 });
 
 describe("pyreel rbac identity and deny handling", () => {
+  it("maps legacy editor grants to operator", async () => {
+    const workspaceDir = await createWorkspace();
+    const aclPath = path.join(workspaceDir, "pyreel", "workspace", "acl.json");
+    await fs.mkdir(path.dirname(aclPath), { recursive: true });
+    await fs.writeFile(
+      aclPath,
+      JSON.stringify(
+        {
+          version: 1,
+          grants: [{ identity: "slack:alice", role: "editor" }],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const access = await resolvePyreelAccess({
+      workspaceDir,
+      ctx: buildTestCtx({ Surface: "slack", SenderId: "alice", From: "slack:u123" }),
+    });
+
+    expect(access.role).toBe("operator");
+  });
+
   it("matches channel-scoped grants before unscoped entries", async () => {
     const workspaceDir = await createWorkspace();
     const aclPath = path.join(workspaceDir, "pyreel", "workspace", "acl.json");
@@ -75,6 +99,65 @@ describe("pyreel rbac identity and deny handling", () => {
     expect(access.denied).toBe(true);
     expect(access.role).toBe("viewer");
     expect(access.matchedGrant).toBeNull();
+  });
+
+  it("applies scoped deny precedence before unscoped deny", async () => {
+    const workspaceDir = await createWorkspace();
+    const aclPath = path.join(workspaceDir, "pyreel", "workspace", "acl.json");
+    await fs.mkdir(path.dirname(aclPath), { recursive: true });
+    await fs.writeFile(
+      aclPath,
+      JSON.stringify(
+        {
+          version: 1,
+          grants: [{ identity: "alice", role: "admin" }],
+          denies: [
+            { identity: "alice", reason: "global" },
+            { identity: "slack:alice", reason: "scoped" },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const access = await resolvePyreelAccess({
+      workspaceDir,
+      ctx: buildTestCtx({ Surface: "slack", SenderId: "alice", From: "slack:u123" }),
+    });
+
+    expect(access.denied).toBe(true);
+    expect(access.denyIdentity).toBe("slack:alice");
+  });
+
+  it("requires scoped grant identity for high-risk actions when requested", async () => {
+    const workspaceDir = await createWorkspace();
+    const aclPath = path.join(workspaceDir, "pyreel", "workspace", "acl.json");
+    await fs.mkdir(path.dirname(aclPath), { recursive: true });
+    await fs.writeFile(
+      aclPath,
+      JSON.stringify(
+        {
+          version: 1,
+          grants: [{ identity: "alice", role: "admin" }],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const highRiskAccess = await resolvePyreelAccess({
+      workspaceDir,
+      ctx: buildTestCtx({ Surface: "slack", SenderId: "alice", From: "slack:u123" }),
+      requireScopedIdentityForGrant: true,
+    });
+    expect(highRiskAccess.role).toBe("operator");
+
+    const defaultAccess = await resolvePyreelAccess({
+      workspaceDir,
+      ctx: buildTestCtx({ Surface: "slack", SenderId: "alice", From: "slack:u123" }),
+    });
+    expect(defaultAccess.role).toBe("admin");
   });
 
   it("writes deny entries to pyreel/workspace/acl.json", async () => {

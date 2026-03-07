@@ -4,7 +4,7 @@ import type { FinalizedMsgContext } from "../templating.js";
 
 const ACL_PATH_PARTS = ["pyreel", "workspace", "acl.json"];
 
-export type PyreelRole = "viewer" | "editor" | "admin";
+export type PyreelRole = "viewer" | "operator" | "approver" | "admin";
 
 export type PyreelGrantEntry = {
   identity: string;
@@ -31,8 +31,9 @@ export type PyreelRbacCommand =
 
 const ROLE_ORDER: Record<PyreelRole, number> = {
   viewer: 1,
-  editor: 2,
-  admin: 3,
+  operator: 2,
+  approver: 3,
+  admin: 4,
 };
 
 const normalizeIdentity = (identity: string): string => identity.trim().toLowerCase();
@@ -62,6 +63,35 @@ export function resolvePyreelIdentityKeys(ctx: FinalizedMsgContext): string[] {
   return [...keys];
 }
 
+function splitIdentityKeys(keys: string[]): { scoped: string[]; unscoped: string[] } {
+  const scoped: string[] = [];
+  const unscoped: string[] = [];
+  for (const key of keys) {
+    if (key.includes(":")) {
+      scoped.push(key);
+      continue;
+    }
+    unscoped.push(key);
+  }
+  return { scoped, unscoped };
+}
+
+function parseRole(rawRole: unknown): PyreelRole | null {
+  if (
+    rawRole === "viewer" ||
+    rawRole === "operator" ||
+    rawRole === "approver" ||
+    rawRole === "admin"
+  ) {
+    return rawRole;
+  }
+  // Backward-compatibility with legacy ACLs.
+  if (rawRole === "editor") {
+    return "operator";
+  }
+  return null;
+}
+
 async function readAclFile(workspaceDir: string): Promise<PyreelAclFile> {
   const aclPath = path.join(workspaceDir, ...ACL_PATH_PARTS);
   try {
@@ -72,12 +102,12 @@ async function readAclFile(workspaceDir: string): Promise<PyreelAclFile> {
       grants: Array.isArray(parsed.grants)
         ? parsed.grants
             .filter((entry): entry is PyreelGrantEntry => {
-              return (
-                typeof entry?.identity === "string" &&
-                (entry.role === "viewer" || entry.role === "editor" || entry.role === "admin")
-              );
+              return typeof entry?.identity === "string" && parseRole(entry.role) !== null;
             })
-            .map((entry) => ({ identity: normalizeIdentity(entry.identity), role: entry.role }))
+            .map((entry) => ({
+              identity: normalizeIdentity(entry.identity),
+              role: parseRole(entry.role) ?? "viewer",
+            }))
         : [],
       denies: Array.isArray(parsed.denies)
         ? parsed.denies
@@ -102,6 +132,7 @@ async function writeAclFile(workspaceDir: string, acl: PyreelAclFile): Promise<v
 export async function resolvePyreelAccess(params: {
   workspaceDir?: string;
   ctx: FinalizedMsgContext;
+  requireScopedIdentityForGrant?: boolean;
 }): Promise<{
   role: PyreelRole;
   denied: boolean;
@@ -110,9 +141,10 @@ export async function resolvePyreelAccess(params: {
   identityKeys: string[];
 }> {
   const identityKeys = resolvePyreelIdentityKeys(params.ctx);
+  const splitKeys = splitIdentityKeys(identityKeys);
   if (!params.workspaceDir) {
     return {
-      role: params.ctx.CommandAuthorized ? "admin" : "editor",
+      role: params.ctx.CommandAuthorized ? "admin" : "operator",
       denied: false,
       denyIdentity: null,
       matchedGrant: null,
@@ -121,7 +153,9 @@ export async function resolvePyreelAccess(params: {
   }
 
   const acl = await readAclFile(params.workspaceDir);
-  const deniedMatch = acl.denies?.find((entry) => identityKeys.includes(entry.identity));
+  const deniedMatch =
+    acl.denies?.find((entry) => splitKeys.scoped.includes(entry.identity)) ??
+    acl.denies?.find((entry) => splitKeys.unscoped.includes(entry.identity));
   if (deniedMatch) {
     return {
       role: "viewer",
@@ -133,8 +167,11 @@ export async function resolvePyreelAccess(params: {
   }
 
   let matchedGrant: PyreelGrantEntry | null = null;
+  const grantCandidates = params.requireScopedIdentityForGrant
+    ? splitKeys.scoped
+    : [...splitKeys.scoped, ...splitKeys.unscoped];
   for (const grant of acl.grants) {
-    if (!identityKeys.includes(grant.identity)) {
+    if (!grantCandidates.includes(grant.identity)) {
       continue;
     }
     if (!matchedGrant || ROLE_ORDER[grant.role] > ROLE_ORDER[matchedGrant.role]) {
@@ -143,7 +180,7 @@ export async function resolvePyreelAccess(params: {
   }
 
   return {
-    role: matchedGrant?.role ?? (params.ctx.CommandAuthorized ? "admin" : "editor"),
+    role: matchedGrant?.role ?? (params.ctx.CommandAuthorized ? "admin" : "operator"),
     denied: false,
     denyIdentity: null,
     matchedGrant,
@@ -210,11 +247,14 @@ export async function handlePyreelRbacCommand(params: {
   if (subcommand === "grant") {
     const identity = normalizeIdentity(tokens[1] ?? "");
     const role = (tokens[2] ?? "").toLowerCase() as PyreelRole;
-    if (!identity || !(role === "viewer" || role === "editor" || role === "admin")) {
+    if (
+      !identity ||
+      !(role === "viewer" || role === "operator" || role === "approver" || role === "admin")
+    ) {
       return {
         handled: true,
         command: "rbac_grant",
-        replyText: "Usage: /pyreel rbac grant <identity> <viewer|editor|admin>",
+        replyText: "Usage: /pyreel rbac grant <identity> <viewer|operator|approver|admin>",
       };
     }
 

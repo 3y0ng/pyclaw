@@ -106,21 +106,31 @@ const WORKFLOW_ACTIONS = new Set<PyreelWorkflowAction>([
 
 const COMMAND_MIN_ROLE: Record<string, PyreelRole> = {
   help: "viewer",
+  status: "viewer",
   whoami: "viewer",
-  apply: "editor",
-  brief: "editor",
-  plan: "editor",
-  research: "editor",
-  scripts: "editor",
-  report: "editor",
-  next: "editor",
+  apply: "approver",
+  brief: "operator",
+  plan: "operator",
+  research: "operator",
+  scripts: "operator",
+  report: "viewer",
+  next: "operator",
   rbac_status: "viewer",
-  rbac_list: "admin",
+  rbac_list: "viewer",
   rbac_grant: "admin",
   rbac_revoke: "admin",
   rbac: "viewer",
-  proactive: "editor",
+  proactive: "admin",
 };
+
+function requireScopedIdentityForAction(action: string): boolean {
+  return (
+    action === "apply" ||
+    action === "rbac_grant" ||
+    action === "rbac_revoke" ||
+    action === "proactive"
+  );
+}
 
 async function enforceRole(params: {
   action: string;
@@ -129,7 +139,11 @@ async function enforceRole(params: {
   matchedCommand: PyreelCommand;
 }): Promise<PyreelRouterDecision | null> {
   const minRole = COMMAND_MIN_ROLE[params.action] ?? "viewer";
-  const access = await resolvePyreelAccess({ workspaceDir: params.workspaceDir, ctx: params.ctx });
+  const access = await resolvePyreelAccess({
+    workspaceDir: params.workspaceDir,
+    ctx: params.ctx,
+    requireScopedIdentityForGrant: requireScopedIdentityForAction(params.action),
+  });
   if (!access.denied && roleSatisfiesMinimum(access.role, minRole)) {
     return null;
   }
