@@ -347,6 +347,14 @@ export const OpenClawSchema = z
           })
           .strict()
           .optional(),
+        writes: z
+          .object({
+            enabled: z.boolean().optional(),
+            confirmationTtlSeconds: z.number().int().positive().optional(),
+            platforms: z.record(z.string(), z.boolean()).optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

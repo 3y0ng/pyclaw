@@ -6,11 +6,22 @@ import {
   type PyreelWorkflowAction,
   type RestrictedPyreelModelRunner,
 } from "./pyreel-workflow.js";
+import {
+  confirmAndApplyChangeSet,
+  createDryRunChangeSet,
+} from "./pyreel/workspace/changesets/store.js";
 
 const PYREEL_HELP_TEXT =
-  "Pyreel mode: use /pyreel help, /pyreel status, /pyreel ingest, /pyreel remix, /pyreel export, /pyreel brief, /pyreel plan, /pyreel research, /pyreel scripts, /pyreel report, or /pyreel next.";
+  "Pyreel mode: use /pyreel help, /pyreel status, /pyreel ingest, /pyreel remix, /pyreel export, /pyreel apply, /pyreel brief, /pyreel plan, /pyreel research, /pyreel scripts, /pyreel report, or /pyreel next.";
 
-type PyreelCommand = "help" | "status" | "ingest" | "remix" | "export" | PyreelWorkflowAction;
+type PyreelCommand =
+  | "help"
+  | "status"
+  | "ingest"
+  | "remix"
+  | "export"
+  | "apply"
+  | PyreelWorkflowAction;
 
 type PyreelRouterPassthroughDecision = {
   path: "passthrough";
@@ -22,7 +33,12 @@ type PyreelRouterPassthroughDecision = {
 type PyreelRouterBlockDecision = {
   path: "block";
   matchedCommand: PyreelCommand | null;
-  deniedReason: "non_pyreel_input" | "unknown_command" | "feature_disabled" | null;
+  deniedReason:
+    | "non_pyreel_input"
+    | "unknown_command"
+    | "feature_disabled"
+    | "write_disabled"
+    | null;
   reason: "pyreel_mode_enforced";
   replyText: string;
 };
@@ -36,6 +52,33 @@ const resolveInboundText = (ctx: FinalizedMsgContext): string => {
 
 const featureEnabled = (cfg: OpenClawConfig, feature: "ingest" | "remix" | "export"): boolean =>
   cfg.pyreel?.features?.[feature] !== false;
+
+function resolveSurface(ctx: FinalizedMsgContext): string {
+  return (ctx.Surface ?? ctx.Provider ?? "unknown").trim().toLowerCase();
+}
+
+function pyreelWriteEnabled(cfg: OpenClawConfig, ctx: FinalizedMsgContext): boolean {
+  const writes = cfg.pyreel?.writes;
+  if (writes?.enabled === false) {
+    return false;
+  }
+
+  const platformFlags = writes?.platforms;
+  if (!platformFlags) {
+    return true;
+  }
+
+  const platformFlag = platformFlags[resolveSurface(ctx)];
+  return platformFlag;
+}
+
+function resolveConfirmationTtlSeconds(cfg: OpenClawConfig): number {
+  const raw = cfg.pyreel?.writes?.confirmationTtlSeconds;
+  if (!raw || raw <= 0) {
+    return 900;
+  }
+  return Math.floor(raw);
+}
 
 const WORKFLOW_ACTIONS = new Set<PyreelWorkflowAction>([
   "brief",
@@ -131,6 +174,86 @@ export async function routePyreelMessage(params: {
     };
   }
 
+  if (action === "apply") {
+    const workspaceDir = params.workspaceDir?.trim();
+    if (!workspaceDir) {
+      return {
+        path: "block",
+        matchedCommand: "apply",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: "Pyreel apply requires a workspace directory.",
+      };
+    }
+
+    if (!pyreelWriteEnabled(cfg, ctx)) {
+      return {
+        path: "block",
+        matchedCommand: "apply",
+        deniedReason: "write_disabled",
+        reason: "pyreel_mode_enforced",
+        replyText: "Pyreel apply is write-disabled for this surface.",
+      };
+    }
+
+    const tokens = parsed.args.split(/\s+/).filter((token) => token.length > 0);
+    if (tokens.includes("--dry-run")) {
+      const dryRunRequest = tokens
+        .filter((token) => token !== "--dry-run")
+        .join(" ")
+        .trim();
+      const created = await createDryRunChangeSet({
+        workspaceDir,
+        request: dryRunRequest || "No request provided",
+        confirmationTtlSeconds: resolveConfirmationTtlSeconds(cfg),
+      });
+
+      return {
+        path: "block",
+        matchedCommand: "apply",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: `Dry run created for ChangeSet ${created.id}. Confirm with /pyreel apply ${created.id} ${created.confirmation?.code}. Code expires at ${created.confirmation?.expiresAt}.`,
+      };
+    }
+
+    if (tokens.length < 2) {
+      return {
+        path: "block",
+        matchedCommand: "apply",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText:
+          "Use /pyreel apply --dry-run <request> or /pyreel apply <changeset_id> <confirm_code>.",
+      };
+    }
+
+    const [changesetId, confirmationCode] = tokens;
+    const applyResult = await confirmAndApplyChangeSet({
+      workspaceDir,
+      changesetId,
+      confirmationCode,
+    });
+
+    if (!applyResult.ok) {
+      return {
+        path: "block",
+        matchedCommand: "apply",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: `ChangeSet apply failed: ${applyResult.reason}.`,
+      };
+    }
+
+    return {
+      path: "block",
+      matchedCommand: "apply",
+      deniedReason: null,
+      reason: "pyreel_mode_enforced",
+      replyText: `ChangeSet ${applyResult.record.id} applied successfully.`,
+    };
+  }
+
   if (WORKFLOW_ACTIONS.has(action as PyreelWorkflowAction)) {
     const workflowAction = action as PyreelWorkflowAction;
     const workspaceDir = params.workspaceDir?.trim();
@@ -141,6 +264,16 @@ export async function routePyreelMessage(params: {
         deniedReason: null,
         reason: "pyreel_mode_enforced",
         replyText: `Pyreel ${workflowAction} requires a workspace directory.`,
+      };
+    }
+
+    if (!pyreelWriteEnabled(cfg, ctx)) {
+      return {
+        path: "block",
+        matchedCommand: workflowAction,
+        deniedReason: "write_disabled",
+        reason: "pyreel_mode_enforced",
+        replyText: `Pyreel ${workflowAction} is write-disabled for this surface.`,
       };
     }
 
