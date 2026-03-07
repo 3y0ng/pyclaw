@@ -163,3 +163,83 @@ describe("routePyreelMessage", () => {
     }
   });
 });
+
+it("enforces minimum role for write commands", async () => {
+  const workspaceDir = await createWorkspace();
+  await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+    JSON.stringify({ version: 1, grants: [{ identity: "slack:user-1", role: "viewer" }] }, null, 2),
+  );
+
+  const decision = await routePyreelMessage({
+    ctx: buildTestCtx({
+      BodyForCommands: "/pyreel apply --dry-run update clips",
+      Surface: "slack",
+      SenderId: "user-1",
+    }),
+    cfg: { pyreel: { mode: true } } as OpenClawConfig,
+    workspaceDir,
+  });
+
+  expect(decision.path).toBe("block");
+  expect(decision.deniedReason).toBe("rbac_forbidden");
+});
+
+it("supports /pyreel whoami", async () => {
+  const workspaceDir = await createWorkspace();
+  await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+    JSON.stringify({ version: 1, grants: [{ identity: "telegram:42", role: "admin" }] }, null, 2),
+  );
+
+  const decision = await routePyreelMessage({
+    ctx: buildTestCtx({
+      BodyForCommands: "/pyreel whoami",
+      Surface: "telegram",
+      SenderId: "42",
+    }),
+    cfg: { pyreel: { mode: true } } as OpenClawConfig,
+    workspaceDir,
+  });
+
+  expect(decision.path).toBe("block");
+  expect(decision.matchedCommand).toBe("whoami");
+  if (decision.path === "block") {
+    expect(decision.replyText).toContain("role=admin");
+  }
+});
+
+it("restricts /pyreel rbac list to admins", async () => {
+  const workspaceDir = await createWorkspace();
+  await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+  await fs.writeFile(
+    path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+    JSON.stringify({ version: 1, grants: [{ identity: "slack:bob", role: "editor" }] }, null, 2),
+  );
+
+  const denied = await routePyreelMessage({
+    ctx: buildTestCtx({ BodyForCommands: "/pyreel rbac list", Surface: "slack", SenderId: "bob" }),
+    cfg: { pyreel: { mode: true } } as OpenClawConfig,
+    workspaceDir,
+  });
+  expect(denied.path).toBe("block");
+  expect(denied.deniedReason).toBe("rbac_forbidden");
+
+  await fs.writeFile(
+    path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+    JSON.stringify({ version: 1, grants: [{ identity: "slack:bob", role: "admin" }] }, null, 2),
+  );
+
+  const allowed = await routePyreelMessage({
+    ctx: buildTestCtx({ BodyForCommands: "/pyreel rbac list", Surface: "slack", SenderId: "bob" }),
+    cfg: { pyreel: { mode: true } } as OpenClawConfig,
+    workspaceDir,
+  });
+  expect(allowed.path).toBe("block");
+  expect(allowed.deniedReason).toBeNull();
+  if (allowed.path === "block") {
+    expect(allowed.replyText).toContain("grants=");
+  }
+});
