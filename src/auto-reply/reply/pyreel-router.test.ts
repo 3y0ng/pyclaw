@@ -84,34 +84,156 @@ describe("routePyreelMessage", () => {
     }
   });
 
-  it("supports /pyreel proactive on|off|status|allow|disallow|quiet-hours", async () => {
+  it("handles /pyreel proactive on", async () => {
     const workspaceDir = await createWorkspace();
     await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
     await fs.writeFile(
       path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
       JSON.stringify({ version: 1, grants: [{ identity: "slack:admin", role: "admin" }] }, null, 2),
     );
-    const proactiveCommands = ["on", "off", "status", "allow", "disallow", "quiet-hours"];
-    for (const subcommand of proactiveCommands) {
-      const decision = await routePyreelMessage({
-        ctx: buildTestCtx({
-          BodyForCommands: `/pyreel proactive ${subcommand}`,
-          Surface: "slack",
-          SenderId: "admin",
-        }),
-        cfg: { pyreel: { mode: true } } as OpenClawConfig,
-        workspaceDir,
-      });
 
-      expect(decision.path).toBe("block");
-      expect(decision.matchedCommand).toBe("proactive");
-      if (decision.path === "block") {
-        expect(decision.replyText).toContain(`Pyreel proactive ${subcommand}`);
-      }
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive on",
+        Surface: "slack",
+        SenderId: "admin",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(decision.path).toBe("block");
+    expect(decision.matchedCommand).toBe("proactive");
+    if (decision.path === "block") {
+      expect(decision.replyText).toContain("enabled=on");
     }
   });
 
-  it("supports /pyreel proactive schedule", async () => {
+  it("handles /pyreel proactive off", async () => {
+    const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify({ version: 1, grants: [{ identity: "slack:admin", role: "admin" }] }, null, 2),
+    );
+
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive off",
+        Surface: "slack",
+        SenderId: "admin",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(decision.path).toBe("block");
+    expect(decision.matchedCommand).toBe("proactive");
+    if (decision.path === "block") {
+      expect(decision.replyText).toContain("enabled=off");
+    }
+  });
+
+  it("handles /pyreel proactive status", async () => {
+    const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify({ version: 1, grants: [{ identity: "slack:admin", role: "admin" }] }, null, 2),
+    );
+
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive status",
+        Surface: "slack",
+        SenderId: "admin",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(decision.path).toBe("block");
+    expect(decision.matchedCommand).toBe("proactive");
+    if (decision.path === "block") {
+      expect(decision.replyText).toContain("schedule=daily");
+    }
+  });
+
+  it("handles /pyreel proactive allow + disallow", async () => {
+    const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify({ version: 1, grants: [{ identity: "slack:admin", role: "admin" }] }, null, 2),
+    );
+
+    const allow = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive allow identity slack:ops",
+        Surface: "slack",
+        SenderId: "admin",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+    expect(allow.path).toBe("block");
+    if (allow.path === "block") {
+      expect(allow.replyText).toContain("allow.identities=slack:ops");
+    }
+
+    const disallow = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive disallow identity slack:ops",
+        Surface: "slack",
+        SenderId: "admin",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+    expect(disallow.path).toBe("block");
+    if (disallow.path === "block") {
+      expect(disallow.replyText).toContain("allow.identities=(none)");
+    }
+  });
+
+  it("handles /pyreel proactive quiet-hours", async () => {
+    const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify({ version: 1, grants: [{ identity: "slack:admin", role: "admin" }] }, null, 2),
+    );
+
+    const setWindow = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive quiet-hours 22 6",
+        Surface: "slack",
+        SenderId: "admin",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+    expect(setWindow.path).toBe("block");
+    if (setWindow.path === "block") {
+      expect(setWindow.replyText).toContain("quietHours=22-6");
+    }
+
+    const unsetWindow = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive quiet-hours off",
+        Surface: "slack",
+        SenderId: "admin",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+    expect(unsetWindow.path).toBe("block");
+    if (unsetWindow.path === "block") {
+      expect(unsetWindow.replyText).toContain("quietHours=off");
+    }
+  });
+
+  it("handles /pyreel proactive schedule", async () => {
     const workspaceDir = await createWorkspace();
     await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
     await fs.writeFile(

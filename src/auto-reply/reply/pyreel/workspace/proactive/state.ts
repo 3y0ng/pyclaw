@@ -7,20 +7,26 @@ import { resolvePyreelWorkspaceFilePath } from "../paths.js";
 
 export type ProactiveReportKind = "daily" | "weekly";
 
+export type ProactiveQuietHours = {
+  startHour: number;
+  endHour: number;
+};
+
+export type ProactiveRateLimits = {
+  perHour: number;
+  perDay: number;
+};
+
 export type PyreelProactiveState = {
-  version: 1;
+  version: 2;
+  enabled: boolean;
+  scheduleKind: ProactiveReportKind;
   allowlist: {
     identities: string[];
     surfaces: string[];
   };
-  quietHours?: {
-    startHour: number;
-    endHour: number;
-  };
-  rateLimits?: {
-    perHour: number;
-    perDay: number;
-  };
+  quietHours: ProactiveQuietHours | null;
+  rateLimits: ProactiveRateLimits | null;
   counters: {
     hourWindowKey: string;
     dayWindowKey: string;
@@ -36,11 +42,15 @@ export type ProactiveGuardResult =
 
 function defaultState(): PyreelProactiveState {
   return {
-    version: 1,
+    version: 2,
+    enabled: true,
+    scheduleKind: "daily",
     allowlist: {
       identities: [],
       surfaces: [],
     },
+    quietHours: null,
+    rateLimits: null,
     counters: {
       hourWindowKey: "",
       dayWindowKey: "",
@@ -60,6 +70,42 @@ function proactiveStatePath(workspaceDir: string): string {
 
 function normalizeIdentity(identity: string): string {
   return identity.trim().toLowerCase();
+}
+
+function normalizeSurface(surface: string): string {
+  return surface.trim().toLowerCase();
+}
+
+function normalizeKind(value: unknown): ProactiveReportKind {
+  return value === "weekly" ? "weekly" : "daily";
+}
+
+function normalizeQuietHours(value: unknown): ProactiveQuietHours | null {
+  if (value === null || value === undefined || typeof value !== "object") {
+    return null;
+  }
+  const entry = value as Partial<ProactiveQuietHours>;
+  if (typeof entry.startHour !== "number" || typeof entry.endHour !== "number") {
+    return null;
+  }
+  return {
+    startHour: Math.min(23, Math.max(0, Math.floor(entry.startHour))),
+    endHour: Math.min(23, Math.max(0, Math.floor(entry.endHour))),
+  };
+}
+
+function normalizeRateLimits(value: unknown): ProactiveRateLimits | null {
+  if (value === null || value === undefined || typeof value !== "object") {
+    return null;
+  }
+  const entry = value as Partial<ProactiveRateLimits>;
+  if (typeof entry.perHour !== "number" || typeof entry.perDay !== "number") {
+    return null;
+  }
+  return {
+    perHour: Math.max(0, Math.floor(entry.perHour)),
+    perDay: Math.max(0, Math.floor(entry.perDay)),
+  };
 }
 
 function resolveIdentityCandidates(ctx: FinalizedMsgContext): string[] {
@@ -100,20 +146,56 @@ function resolveReportIdempotencyKey(kind: ProactiveReportKind, now: Date): stri
   return `${kind}:${year}-W${week}`;
 }
 
-function inQuietHours(now: Date, quietHours?: { startHour: number; endHour: number }): boolean {
+function inQuietHours(now: Date, quietHours: ProactiveQuietHours | null): boolean {
   if (!quietHours) {
     return false;
   }
-  const start = Math.min(23, Math.max(0, Math.floor(quietHours.startHour)));
-  const end = Math.min(23, Math.max(0, Math.floor(quietHours.endHour)));
   const hour = now.getHours();
-  if (start === end) {
+  if (quietHours.startHour === quietHours.endHour) {
     return false;
   }
-  if (start < end) {
-    return hour >= start && hour < end;
+  if (quietHours.startHour < quietHours.endHour) {
+    return hour >= quietHours.startHour && hour < quietHours.endHour;
   }
-  return hour >= start || hour < end;
+  return hour >= quietHours.startHour || hour < quietHours.endHour;
+}
+
+function normalizeState(state: Partial<PyreelProactiveState>): PyreelProactiveState {
+  const base = defaultState();
+  const allowlist = state.allowlist ?? {};
+  return {
+    version: 2,
+    enabled: state.enabled !== false,
+    scheduleKind: normalizeKind(state.scheduleKind),
+    allowlist: {
+      identities: Array.isArray(allowlist.identities)
+        ? [...new Set(allowlist.identities.map((value) => normalizeIdentity(String(value))))]
+        : base.allowlist.identities,
+      surfaces: Array.isArray(allowlist.surfaces)
+        ? [...new Set(allowlist.surfaces.map((value) => normalizeSurface(String(value))))]
+        : base.allowlist.surfaces,
+    },
+    quietHours: normalizeQuietHours(state.quietHours),
+    rateLimits: normalizeRateLimits(state.rateLimits),
+    counters: {
+      ...base.counters,
+      ...state.counters,
+    },
+    postedReports: {
+      ...base.postedReports,
+      ...state.postedReports,
+    },
+  };
+}
+
+async function updateProactiveState(
+  workspaceDir: string,
+  updater: (state: PyreelProactiveState) => PyreelProactiveState,
+): Promise<PyreelProactiveState> {
+  const current = await loadProactiveState(workspaceDir);
+  const next = normalizeState(updater(current));
+  await saveProactiveState(workspaceDir, next);
+  return next;
 }
 
 export function proactiveFeatureEnabled(cfg: OpenClawConfig): boolean {
@@ -128,27 +210,7 @@ export async function loadProactiveState(workspaceDir: string): Promise<PyreelPr
   try {
     const raw = await fs.readFile(proactiveStatePath(workspaceDir), "utf8");
     const parsed = JSON.parse(raw) as Partial<PyreelProactiveState>;
-    const base = defaultState();
-    return {
-      ...base,
-      ...parsed,
-      allowlist: {
-        identities: Array.isArray(parsed.allowlist?.identities)
-          ? parsed.allowlist.identities.map((value) => normalizeIdentity(String(value)))
-          : base.allowlist.identities,
-        surfaces: Array.isArray(parsed.allowlist?.surfaces)
-          ? parsed.allowlist.surfaces.map((value) => String(value).trim().toLowerCase())
-          : base.allowlist.surfaces,
-      },
-      counters: {
-        ...base.counters,
-        ...parsed.counters,
-      },
-      postedReports: {
-        ...base.postedReports,
-        ...parsed.postedReports,
-      },
-    };
+    return normalizeState(parsed);
   } catch {
     return defaultState();
   }
@@ -160,7 +222,95 @@ export async function saveProactiveState(
 ): Promise<void> {
   const statePath = proactiveStatePath(workspaceDir);
   await fs.mkdir(path.dirname(statePath), { recursive: true });
-  await fs.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  await fs.writeFile(statePath, `${JSON.stringify(normalizeState(state), null, 2)}\n`, "utf8");
+}
+
+export async function setProactiveEnabled(
+  workspaceDir: string,
+  enabled: boolean,
+): Promise<PyreelProactiveState> {
+  return updateProactiveState(workspaceDir, (state) => ({ ...state, enabled }));
+}
+
+export async function setProactiveSchedule(
+  workspaceDir: string,
+  kind: ProactiveReportKind,
+): Promise<PyreelProactiveState> {
+  return updateProactiveState(workspaceDir, (state) => ({ ...state, scheduleKind: kind }));
+}
+
+export async function allowProactiveTarget(params: {
+  workspaceDir: string;
+  target: "identity" | "surface";
+  value: string;
+}): Promise<PyreelProactiveState> {
+  if (params.target === "surface") {
+    const value = normalizeSurface(params.value);
+    return updateProactiveState(params.workspaceDir, (state) => ({
+      ...state,
+      allowlist: {
+        ...state.allowlist,
+        surfaces: [...new Set([...state.allowlist.surfaces, value])],
+      },
+    }));
+  }
+
+  const value = normalizeIdentity(params.value);
+  return updateProactiveState(params.workspaceDir, (state) => ({
+    ...state,
+    allowlist: {
+      ...state.allowlist,
+      identities: [...new Set([...state.allowlist.identities, value])],
+    },
+  }));
+}
+
+export async function disallowProactiveTarget(params: {
+  workspaceDir: string;
+  target: "identity" | "surface";
+  value: string;
+}): Promise<PyreelProactiveState> {
+  if (params.target === "surface") {
+    const value = normalizeSurface(params.value);
+    return updateProactiveState(params.workspaceDir, (state) => ({
+      ...state,
+      allowlist: {
+        ...state.allowlist,
+        surfaces: state.allowlist.surfaces.filter((entry) => entry !== value),
+      },
+    }));
+  }
+
+  const value = normalizeIdentity(params.value);
+  return updateProactiveState(params.workspaceDir, (state) => ({
+    ...state,
+    allowlist: {
+      ...state.allowlist,
+      identities: state.allowlist.identities.filter((entry) => entry !== value),
+    },
+  }));
+}
+
+export async function setProactiveQuietHours(
+  workspaceDir: string,
+  quietHours: ProactiveQuietHours | null,
+): Promise<PyreelProactiveState> {
+  return updateProactiveState(workspaceDir, (state) => ({ ...state, quietHours }));
+}
+
+export function renderProactiveStatus(state: PyreelProactiveState): string {
+  const quietHours = state.quietHours
+    ? `${state.quietHours.startHour}-${state.quietHours.endHour}`
+    : "off";
+  const identities = state.allowlist.identities.join(", ") || "(none)";
+  const surfaces = state.allowlist.surfaces.join(", ") || "(none)";
+  return [
+    `enabled=${state.enabled ? "on" : "off"}`,
+    `schedule=${state.scheduleKind}`,
+    `quietHours=${quietHours}`,
+    `allow.identities=${identities}`,
+    `allow.surfaces=${surfaces}`,
+  ].join("\n");
 }
 
 export async function evaluateProactiveGuard(params: {
@@ -173,7 +323,7 @@ export async function evaluateProactiveGuard(params: {
   const now = params.now ?? new Date();
   const state = await loadProactiveState(params.workspaceDir);
 
-  if (!proactiveFeatureEnabled(params.cfg)) {
+  if (!proactiveFeatureEnabled(params.cfg) || !state.enabled) {
     return { allowed: false, reason: "proactive_disabled", state };
   }
 
