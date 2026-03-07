@@ -27,7 +27,7 @@ import {
 } from "./pyreel/workspace/proactive/state.js";
 
 const PYREEL_HELP_TEXT =
-  "Pyreel mode: use /pyreel help, /pyreel status, /pyreel whoami, /pyreel rbac status|list|grant|revoke, /pyreel ingest, /pyreel remix, /pyreel export, /pyreel apply, /pyreel brief, /pyreel plan, /pyreel research, /pyreel scripts, /pyreel report, /pyreel proactive <daily|weekly>, or /pyreel next.";
+  "Pyreel mode: use /pyreel help|brief|plan|research|scripts|report|next|apply, /pyreel proactive on|off|status|schedule|allow|disallow|quiet-hours, /pyreel whoami, or /pyreel rbac status|list|grant|revoke.";
 
 type PyreelCommand =
   | "help"
@@ -35,9 +35,6 @@ type PyreelCommand =
   | "whoami"
   | "rbac"
   | PyreelRbacCommand
-  | "ingest"
-  | "remix"
-  | "export"
   | "apply"
   | "proactive"
   | PyreelWorkflowAction;
@@ -70,9 +67,6 @@ const resolveInboundText = (ctx: FinalizedMsgContext): string => {
   const inboundBody = ctx.BodyForCommands ?? ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "";
   return inboundBody.trim();
 };
-
-const featureEnabled = (cfg: OpenClawConfig, feature: "ingest" | "remix" | "export"): boolean =>
-  cfg.pyreel?.features?.[feature] !== false;
 
 function resolveSurface(ctx: FinalizedMsgContext): string {
   return (ctx.Surface ?? ctx.Provider ?? "unknown").trim().toLowerCase();
@@ -112,11 +106,7 @@ const WORKFLOW_ACTIONS = new Set<PyreelWorkflowAction>([
 
 const COMMAND_MIN_ROLE: Record<string, PyreelRole> = {
   help: "viewer",
-  status: "viewer",
   whoami: "viewer",
-  ingest: "editor",
-  remix: "editor",
-  export: "editor",
   apply: "editor",
   brief: "editor",
   plan: "editor",
@@ -153,12 +143,29 @@ async function enforceRole(params: {
   };
 }
 
-function resolveProactiveKind(args: string): ProactiveReportKind | null {
-  const token = args
-    .split(/\s+/)
-    .find((value) => value.trim().length > 0)
-    ?.trim()
-    .toLowerCase();
+function resolveProactiveCommand(args: string): {
+  subcommand: "on" | "off" | "status" | "schedule" | "allow" | "disallow" | "quiet-hours";
+  rest: string;
+} | null {
+  const tokens = args.split(/\s+/).filter((token) => token.length > 0);
+  const subcommand = (tokens[0] ?? "status").toLowerCase();
+  const rest = tokens.slice(1).join(" ");
+  if (
+    subcommand === "on" ||
+    subcommand === "off" ||
+    subcommand === "status" ||
+    subcommand === "schedule" ||
+    subcommand === "allow" ||
+    subcommand === "disallow" ||
+    subcommand === "quiet-hours"
+  ) {
+    return { subcommand, rest };
+  }
+  return null;
+}
+
+function resolveProactiveKind(raw: string): ProactiveReportKind | null {
+  const token = raw.trim().toLowerCase();
   if (token === "daily" || token === "weekly") {
     return token;
   }
@@ -242,28 +249,6 @@ export async function routePyreelMessage(params: {
     };
   }
 
-  if (action === "status") {
-    const denied = await enforceRole({
-      action,
-      ctx,
-      workspaceDir: params.workspaceDir,
-      matchedCommand: "status",
-    });
-    if (denied) {
-      return denied;
-    }
-    const ingestEnabled = featureEnabled(cfg, "ingest") ? "on" : "off";
-    const remixEnabled = featureEnabled(cfg, "remix") ? "on" : "off";
-    const exportEnabled = featureEnabled(cfg, "export") ? "on" : "off";
-    return {
-      path: "block",
-      matchedCommand: "status",
-      deniedReason: null,
-      reason: "pyreel_mode_enforced",
-      replyText: `Pyreel status: ingest=${ingestEnabled}, remix=${remixEnabled}, export=${exportEnabled}.`,
-    };
-  }
-
   if (action === "whoami" || action === "rbac") {
     const authCommand = action === "whoami" ? "whoami" : resolveRbacCommandForAuth(parsed.args);
     const deny = await enforceRole({
@@ -304,31 +289,12 @@ export async function routePyreelMessage(params: {
   }
 
   if (action === "ingest" || action === "remix" || action === "export") {
-    const denied = await enforceRole({
-      action,
-      ctx,
-      workspaceDir: params.workspaceDir,
-      matchedCommand: action,
-    });
-    if (denied) {
-      return denied;
-    }
-
-    if (!featureEnabled(cfg, action)) {
-      return {
-        path: "block",
-        matchedCommand: action,
-        deniedReason: "feature_disabled",
-        reason: "pyreel_mode_enforced",
-        replyText: `Pyreel ${action} is disabled in config.`,
-      };
-    }
     return {
       path: "block",
-      matchedCommand: action,
-      deniedReason: null,
+      matchedCommand: null,
+      deniedReason: "unknown_command",
       reason: "pyreel_mode_enforced",
-      replyText: `Pyreel ${action} command received.`,
+      replyText: PYREEL_HELP_TEXT,
     };
   }
 
@@ -354,14 +320,51 @@ export async function routePyreelMessage(params: {
       };
     }
 
-    const kind = resolveProactiveKind(parsed.args);
+    const proactiveCommand = resolveProactiveCommand(parsed.args);
+    if (!proactiveCommand) {
+      return {
+        path: "block",
+        matchedCommand: "proactive",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: "Usage: /pyreel proactive on|off|status|schedule|allow|disallow|quiet-hours",
+      };
+    }
+
+    if (proactiveCommand.subcommand === "status") {
+      return {
+        path: "block",
+        matchedCommand: "proactive",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: "Pyreel proactive status command received.",
+      };
+    }
+
+    if (
+      proactiveCommand.subcommand === "on" ||
+      proactiveCommand.subcommand === "off" ||
+      proactiveCommand.subcommand === "allow" ||
+      proactiveCommand.subcommand === "disallow" ||
+      proactiveCommand.subcommand === "quiet-hours"
+    ) {
+      return {
+        path: "block",
+        matchedCommand: "proactive",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: `Pyreel proactive ${proactiveCommand.subcommand} command received.`,
+      };
+    }
+
+    const kind = resolveProactiveKind(proactiveCommand.rest);
     if (!kind) {
       return {
         path: "block",
         matchedCommand: "proactive",
         deniedReason: null,
         reason: "pyreel_mode_enforced",
-        replyText: "Usage: /pyreel proactive <daily|weekly>",
+        replyText: "Usage: /pyreel proactive schedule <daily|weekly>",
       };
     }
 
