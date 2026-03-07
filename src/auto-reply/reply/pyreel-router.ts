@@ -2,6 +2,13 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import { parseSlashCommandOrNull } from "./commands-slash-parse.js";
 import {
+  handlePyreelRbacCommand,
+  resolvePyreelAccess,
+  roleSatisfiesMinimum,
+  type PyreelRbacCommand,
+  type PyreelRole,
+} from "./pyreel-rbac.js";
+import {
   executePyreelWorkflow,
   type PyreelWorkflowAction,
   type RestrictedPyreelModelRunner,
@@ -12,11 +19,14 @@ import {
 } from "./pyreel/workspace/changesets/store.js";
 
 const PYREEL_HELP_TEXT =
-  "Pyreel mode: use /pyreel help, /pyreel status, /pyreel ingest, /pyreel remix, /pyreel export, /pyreel apply, /pyreel brief, /pyreel plan, /pyreel research, /pyreel scripts, /pyreel report, or /pyreel next.";
+  "Pyreel mode: use /pyreel help, /pyreel status, /pyreel whoami, /pyreel rbac status|list|grant|revoke, /pyreel ingest, /pyreel remix, /pyreel export, /pyreel apply, /pyreel brief, /pyreel plan, /pyreel research, /pyreel scripts, /pyreel report, or /pyreel next.";
 
 type PyreelCommand =
   | "help"
   | "status"
+  | "whoami"
+  | "rbac"
+  | PyreelRbacCommand
   | "ingest"
   | "remix"
   | "export"
@@ -38,6 +48,7 @@ type PyreelRouterBlockDecision = {
     | "unknown_command"
     | "feature_disabled"
     | "write_disabled"
+    | "rbac_forbidden"
     | null;
   reason: "pyreel_mode_enforced";
   replyText: string;
@@ -89,6 +100,63 @@ const WORKFLOW_ACTIONS = new Set<PyreelWorkflowAction>([
   "next",
 ]);
 
+const COMMAND_MIN_ROLE: Record<string, PyreelRole> = {
+  help: "viewer",
+  status: "viewer",
+  whoami: "viewer",
+  ingest: "editor",
+  remix: "editor",
+  export: "editor",
+  apply: "editor",
+  brief: "editor",
+  plan: "editor",
+  research: "editor",
+  scripts: "editor",
+  report: "editor",
+  next: "editor",
+  rbac_status: "viewer",
+  rbac_list: "admin",
+  rbac_grant: "admin",
+  rbac_revoke: "admin",
+  rbac: "viewer",
+};
+
+async function enforceRole(params: {
+  action: string;
+  ctx: FinalizedMsgContext;
+  workspaceDir?: string;
+  matchedCommand: PyreelCommand;
+}): Promise<PyreelRouterDecision | null> {
+  const minRole = COMMAND_MIN_ROLE[params.action] ?? "viewer";
+  const access = await resolvePyreelAccess({ workspaceDir: params.workspaceDir, ctx: params.ctx });
+  if (!access.denied && roleSatisfiesMinimum(access.role, minRole)) {
+    return null;
+  }
+
+  return {
+    path: "block",
+    matchedCommand: params.matchedCommand,
+    deniedReason: "rbac_forbidden",
+    reason: "pyreel_mode_enforced",
+    replyText: `Pyreel RBAC denied: ${params.action} requires ${minRole}.`,
+  };
+}
+
+function resolveRbacCommandForAuth(args: string): PyreelRbacCommand {
+  const tokens = args.split(/\s+/).filter((token) => token.length > 0);
+  const subcommand = (tokens[0] ?? "status").toLowerCase();
+  if (subcommand === "list") {
+    return "rbac_list";
+  }
+  if (subcommand === "grant") {
+    return "rbac_grant";
+  }
+  if (subcommand === "revoke") {
+    return "rbac_revoke";
+  }
+  return "rbac_status";
+}
+
 export async function routePyreelMessage(params: {
   ctx: FinalizedMsgContext;
   cfg: OpenClawConfig;
@@ -133,6 +201,15 @@ export async function routePyreelMessage(params: {
 
   const action = parsed.action;
   if (action === "help") {
+    const denied = await enforceRole({
+      action,
+      ctx,
+      workspaceDir: params.workspaceDir,
+      matchedCommand: "help",
+    });
+    if (denied) {
+      return denied;
+    }
     return {
       path: "block",
       matchedCommand: "help",
@@ -143,6 +220,15 @@ export async function routePyreelMessage(params: {
   }
 
   if (action === "status") {
+    const denied = await enforceRole({
+      action,
+      ctx,
+      workspaceDir: params.workspaceDir,
+      matchedCommand: "status",
+    });
+    if (denied) {
+      return denied;
+    }
     const ingestEnabled = featureEnabled(cfg, "ingest") ? "on" : "off";
     const remixEnabled = featureEnabled(cfg, "remix") ? "on" : "off";
     const exportEnabled = featureEnabled(cfg, "export") ? "on" : "off";
@@ -155,7 +241,56 @@ export async function routePyreelMessage(params: {
     };
   }
 
+  if (action === "whoami" || action === "rbac") {
+    const authCommand = action === "whoami" ? "whoami" : resolveRbacCommandForAuth(parsed.args);
+    const deny = await enforceRole({
+      action: authCommand,
+      ctx,
+      workspaceDir: params.workspaceDir,
+      matchedCommand: authCommand,
+    });
+    if (deny) {
+      return deny;
+    }
+
+    const rbacResult = await handlePyreelRbacCommand({
+      action,
+      args: parsed.args,
+      workspaceDir: params.workspaceDir,
+      ctx,
+    });
+
+    if (!rbacResult.handled) {
+      return {
+        path: "block",
+        matchedCommand: null,
+        deniedReason: "unknown_command",
+        reason: "pyreel_mode_enforced",
+        replyText: PYREEL_HELP_TEXT,
+      };
+    }
+
+    return {
+      path: "block",
+      matchedCommand:
+        rbacResult.command === undefined ? action : (rbacResult.command as PyreelCommand),
+      deniedReason: null,
+      reason: "pyreel_mode_enforced",
+      replyText: rbacResult.replyText ?? "",
+    };
+  }
+
   if (action === "ingest" || action === "remix" || action === "export") {
+    const denied = await enforceRole({
+      action,
+      ctx,
+      workspaceDir: params.workspaceDir,
+      matchedCommand: action,
+    });
+    if (denied) {
+      return denied;
+    }
+
     if (!featureEnabled(cfg, action)) {
       return {
         path: "block",
@@ -175,6 +310,16 @@ export async function routePyreelMessage(params: {
   }
 
   if (action === "apply") {
+    const denied = await enforceRole({
+      action,
+      ctx,
+      workspaceDir: params.workspaceDir,
+      matchedCommand: "apply",
+    });
+    if (denied) {
+      return denied;
+    }
+
     const workspaceDir = params.workspaceDir?.trim();
     if (!workspaceDir) {
       return {
@@ -256,6 +401,15 @@ export async function routePyreelMessage(params: {
 
   if (WORKFLOW_ACTIONS.has(action as PyreelWorkflowAction)) {
     const workflowAction = action as PyreelWorkflowAction;
+    const denied = await enforceRole({
+      action,
+      ctx,
+      workspaceDir: params.workspaceDir,
+      matchedCommand: workflowAction,
+    });
+    if (denied) {
+      return denied;
+    }
     const workspaceDir = params.workspaceDir?.trim();
     if (!workspaceDir) {
       return {
