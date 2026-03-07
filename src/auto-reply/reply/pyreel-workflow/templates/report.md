@@ -4,6 +4,6 @@
 
 {{request}}
 
-## Output
+## Report
 
 {{generated_text}}
