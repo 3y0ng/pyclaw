@@ -98,6 +98,90 @@ describe("routePyreelMessage", () => {
     expect(decision.deniedReason).toBe("write_disabled");
   });
 
+  it("skips proactive reports when proactive gates are disabled", async () => {
+    const workspaceDir = await createWorkspace();
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({ BodyForCommands: "/pyreel proactive daily", Surface: "slack" }),
+      cfg: {
+        pyreel: { mode: true, features: { proactive: false }, proactive: { enabled: false } },
+      } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(decision.path).toBe("block");
+    expect(decision.matchedCommand).toBe("proactive");
+    expect(decision.deniedReason).toBe("proactive_disabled");
+
+    const artifactsDir = path.join(workspaceDir, ".pyreel", "artifacts");
+    await expect(fs.stat(artifactsDir)).rejects.toThrow();
+  });
+
+  it("posts proactive daily report when gates are enabled", async () => {
+    const workspaceDir = await createWorkspace();
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive daily",
+        Surface: "slack",
+        SenderId: "operator-1",
+      }),
+      cfg: {
+        pyreel: {
+          mode: true,
+          features: { proactive: true },
+          proactive: { enabled: true },
+        },
+      } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(decision.path).toBe("block");
+    if (decision.path === "block") {
+      expect(decision.replyText).toContain("proactive daily posted");
+    }
+
+    const statePath = path.join(workspaceDir, ".pyreel", "workspace", "state", "proactive.json");
+    const rawState = await fs.readFile(statePath, "utf8");
+    expect(rawState).toContain('"daily"');
+  });
+
+  it("keeps auto-apply default disabled", async () => {
+    const workspaceDir = await createWorkspace();
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel apply --auto-apply tune campaign pacing",
+        Surface: "slack",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(decision.path).toBe("block");
+    expect(decision.matchedCommand).toBe("apply");
+    expect(decision.deniedReason).toBe("write_disabled");
+  });
+
+  it("allows low-risk auto-apply when explicitly enabled", async () => {
+    const workspaceDir = await createWorkspace();
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel apply --auto-apply tune campaign pacing",
+        Surface: "slack",
+      }),
+      cfg: {
+        pyreel: {
+          mode: true,
+          autoApply: { enabled: true, platforms: { slack: true } },
+        },
+      } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(decision.path).toBe("block");
+    if (decision.path === "block") {
+      expect(decision.replyText).toContain("auto-applied successfully");
+    }
+  });
+
   it("supports dry-run plus confirmation apply flow", async () => {
     const workspaceDir = await createWorkspace();
     const dryRun = await routePyreelMessage({

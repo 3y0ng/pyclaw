@@ -684,12 +684,18 @@ function normalizePyreelConfig(config: OpenClawConfig, env: NodeJS.ProcessEnv): 
   const ingestFromEnv = parseEnvBooleanFlag(env.PYREEL_FEATURE_INGEST);
   const remixFromEnv = parseEnvBooleanFlag(env.PYREEL_FEATURE_REMIX);
   const exportFromEnv = parseEnvBooleanFlag(env.PYREEL_FEATURE_EXPORT);
+  const proactiveFeatureFromEnv = parseEnvBooleanFlag(env.PYREEL_FEATURE_PROACTIVE);
+  const proactiveEnabledFromEnv = parseEnvBooleanFlag(env.PYREEL_PROACTIVE_ENABLED);
+  const autoApplyEnabledFromEnv = parseEnvBooleanFlag(env.PYREEL_AUTO_APPLY);
 
   const hasEnvPyreel =
     modeFromEnv !== null ||
     ingestFromEnv !== null ||
     remixFromEnv !== null ||
-    exportFromEnv !== null;
+    exportFromEnv !== null ||
+    proactiveFeatureFromEnv !== null ||
+    proactiveEnabledFromEnv !== null ||
+    autoApplyEnabledFromEnv !== null;
 
   if (!hasEnvPyreel) {
     return;
@@ -706,6 +712,15 @@ function normalizePyreelConfig(config: OpenClawConfig, env: NodeJS.ProcessEnv): 
       ingest: ingestFromEnv ?? existingFeatures.ingest ?? false,
       remix: remixFromEnv ?? existingFeatures.remix ?? false,
       export: exportFromEnv ?? existingFeatures.export ?? false,
+      proactive: proactiveFeatureFromEnv ?? existingFeatures.proactive ?? false,
+    },
+    proactive: {
+      ...existingPyreel.proactive,
+      enabled: proactiveEnabledFromEnv ?? existingPyreel.proactive?.enabled ?? false,
+    },
+    autoApply: {
+      ...existingPyreel.autoApply,
+      enabled: autoApplyEnabledFromEnv ?? existingPyreel.autoApply?.enabled ?? false,
     },
   };
 }

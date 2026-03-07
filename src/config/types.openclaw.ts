@@ -36,6 +36,21 @@ export type PyreelConfig = {
     ingest?: boolean;
     remix?: boolean;
     export?: boolean;
+    proactive?: boolean;
+  };
+  /** Proactive report scheduling + safety controls. */
+  proactive?: {
+    /** Master toggle for proactive report execution (default: false). */
+    enabled?: boolean;
+    /** Optional timezone for quiet hours/rate window boundaries. */
+    timezone?: string;
+  };
+  /** Optional low-risk automation guardrails for apply flows. */
+  autoApply?: {
+    /** Default-off safety switch for auto-apply behavior. */
+    enabled?: boolean;
+    /** Restrict auto-apply by surface (e.g. slack=true). */
+    platforms?: Record<string, boolean>;
   };
   /** Write controls for mutation paths such as /pyreel apply and workflow artifact creation. */
   writes?: {

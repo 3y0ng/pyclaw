@@ -11,6 +11,9 @@ describe("pyreel config env normalization", () => {
         PYREEL_FEATURE_INGEST: undefined,
         PYREEL_FEATURE_REMIX: undefined,
         PYREEL_FEATURE_EXPORT: undefined,
+        PYREEL_FEATURE_PROACTIVE: undefined,
+        PYREEL_PROACTIVE_ENABLED: undefined,
+        PYREEL_AUTO_APPLY: undefined,
       },
       async () => {
         await withTempHome(async (home) => {
@@ -31,6 +34,9 @@ describe("pyreel config env normalization", () => {
         PYREEL_FEATURE_INGEST: "1",
         PYREEL_FEATURE_REMIX: "1",
         PYREEL_FEATURE_EXPORT: "0",
+        PYREEL_FEATURE_PROACTIVE: "1",
+        PYREEL_PROACTIVE_ENABLED: "1",
+        PYREEL_AUTO_APPLY: "0",
       },
       async () => {
         await withTempHome(async (home) => {
@@ -42,6 +48,9 @@ describe("pyreel config env normalization", () => {
           expect(cfg.pyreel?.features?.ingest).toBe(true);
           expect(cfg.pyreel?.features?.remix).toBe(true);
           expect(cfg.pyreel?.features?.export).toBe(false);
+          expect(cfg.pyreel?.features?.proactive).toBe(true);
+          expect(cfg.pyreel?.proactive?.enabled).toBe(true);
+          expect(cfg.pyreel?.autoApply?.enabled).toBe(false);
         });
       },
     );
@@ -54,6 +63,9 @@ describe("pyreel config env normalization", () => {
         PYREEL_FEATURE_INGEST: "yes",
         PYREEL_FEATURE_REMIX: "nope",
         PYREEL_FEATURE_EXPORT: "enabled",
+        PYREEL_FEATURE_PROACTIVE: "enabled",
+        PYREEL_PROACTIVE_ENABLED: "enabled",
+        PYREEL_AUTO_APPLY: "enabled",
       },
       async () => {
         await withTempHome(async (home) => {

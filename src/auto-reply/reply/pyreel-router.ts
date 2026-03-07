@@ -17,9 +17,17 @@ import {
   confirmAndApplyChangeSet,
   createDryRunChangeSet,
 } from "./pyreel/workspace/changesets/store.js";
+import {
+  autoApplyGuardEnabled,
+  evaluateProactiveGuard,
+  isLowRiskAutoApplyRequest,
+  markProactivePosted,
+  resolveProactiveReportDue,
+  type ProactiveReportKind,
+} from "./pyreel/workspace/proactive/state.js";
 
 const PYREEL_HELP_TEXT =
-  "Pyreel mode: use /pyreel help, /pyreel status, /pyreel whoami, /pyreel rbac status|list|grant|revoke, /pyreel ingest, /pyreel remix, /pyreel export, /pyreel apply, /pyreel brief, /pyreel plan, /pyreel research, /pyreel scripts, /pyreel report, or /pyreel next.";
+  "Pyreel mode: use /pyreel help, /pyreel status, /pyreel whoami, /pyreel rbac status|list|grant|revoke, /pyreel ingest, /pyreel remix, /pyreel export, /pyreel apply, /pyreel brief, /pyreel plan, /pyreel research, /pyreel scripts, /pyreel report, /pyreel proactive <daily|weekly>, or /pyreel next.";
 
 type PyreelCommand =
   | "help"
@@ -31,6 +39,7 @@ type PyreelCommand =
   | "remix"
   | "export"
   | "apply"
+  | "proactive"
   | PyreelWorkflowAction;
 
 type PyreelRouterPassthroughDecision = {
@@ -49,6 +58,7 @@ type PyreelRouterBlockDecision = {
     | "feature_disabled"
     | "write_disabled"
     | "rbac_forbidden"
+    | "proactive_disabled"
     | null;
   reason: "pyreel_mode_enforced";
   replyText: string;
@@ -119,6 +129,7 @@ const COMMAND_MIN_ROLE: Record<string, PyreelRole> = {
   rbac_grant: "admin",
   rbac_revoke: "admin",
   rbac: "viewer",
+  proactive: "editor",
 };
 
 async function enforceRole(params: {
@@ -140,6 +151,18 @@ async function enforceRole(params: {
     reason: "pyreel_mode_enforced",
     replyText: `Pyreel RBAC denied: ${params.action} requires ${minRole}.`,
   };
+}
+
+function resolveProactiveKind(args: string): ProactiveReportKind | null {
+  const token = args
+    .split(/\s+/)
+    .find((value) => value.trim().length > 0)
+    ?.trim()
+    .toLowerCase();
+  if (token === "daily" || token === "weekly") {
+    return token;
+  }
+  return null;
 }
 
 function resolveRbacCommandForAuth(args: string): PyreelRbacCommand {
@@ -309,6 +332,78 @@ export async function routePyreelMessage(params: {
     };
   }
 
+  if (action === "proactive") {
+    const denied = await enforceRole({
+      action,
+      ctx,
+      workspaceDir: params.workspaceDir,
+      matchedCommand: "proactive",
+    });
+    if (denied) {
+      return denied;
+    }
+
+    const workspaceDir = params.workspaceDir?.trim();
+    if (!workspaceDir) {
+      return {
+        path: "block",
+        matchedCommand: "proactive",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: "Pyreel proactive requires a workspace directory.",
+      };
+    }
+
+    const kind = resolveProactiveKind(parsed.args);
+    if (!kind) {
+      return {
+        path: "block",
+        matchedCommand: "proactive",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: "Usage: /pyreel proactive <daily|weekly>",
+      };
+    }
+
+    const guard = await evaluateProactiveGuard({
+      cfg,
+      ctx,
+      workspaceDir,
+      kind,
+    });
+
+    if (!guard.allowed) {
+      const nextDue = resolveProactiveReportDue({
+        kind,
+        nowMs: Date.now(),
+        timezone: cfg.pyreel?.proactive?.timezone,
+      });
+      return {
+        path: "block",
+        matchedCommand: "proactive",
+        deniedReason: guard.reason === "proactive_disabled" ? "proactive_disabled" : null,
+        reason: "pyreel_mode_enforced",
+        replyText: `Pyreel proactive ${kind} skipped: ${guard.reason}.${nextDue ? ` Next due at ${new Date(nextDue).toISOString()}.` : ""}`,
+      };
+    }
+
+    const artifact = await executePyreelWorkflow({
+      action: "report",
+      request: `${kind} proactive report`,
+      workspaceDir,
+      runner: params.restrictedModelRunner,
+    });
+    await markProactivePosted({ workspaceDir, state: guard.state, kind });
+
+    return {
+      path: "block",
+      matchedCommand: "proactive",
+      deniedReason: null,
+      reason: "pyreel_mode_enforced",
+      replyText: `Pyreel proactive ${kind} posted via ${artifact.relativeArtifactPath}.`,
+    };
+  }
+
   if (action === "apply") {
     const denied = await enforceRole({
       action,
@@ -342,6 +437,61 @@ export async function routePyreelMessage(params: {
     }
 
     const tokens = parsed.args.split(/\s+/).filter((token) => token.length > 0);
+    if (tokens.includes("--auto-apply")) {
+      if (!autoApplyGuardEnabled(cfg, ctx)) {
+        return {
+          path: "block",
+          matchedCommand: "apply",
+          deniedReason: "write_disabled",
+          reason: "pyreel_mode_enforced",
+          replyText: "Pyreel auto-apply is disabled for this surface.",
+        };
+      }
+
+      const autoApplyRequest = tokens
+        .filter((token) => token !== "--auto-apply")
+        .join(" ")
+        .trim();
+      if (!isLowRiskAutoApplyRequest(autoApplyRequest)) {
+        return {
+          path: "block",
+          matchedCommand: "apply",
+          deniedReason: null,
+          reason: "pyreel_mode_enforced",
+          replyText:
+            "Pyreel auto-apply rejected: request is not low-risk. Use /pyreel apply --dry-run instead.",
+        };
+      }
+
+      const created = await createDryRunChangeSet({
+        workspaceDir,
+        request: autoApplyRequest || "No request provided",
+        confirmationTtlSeconds: resolveConfirmationTtlSeconds(cfg),
+      });
+      const applyResult = await confirmAndApplyChangeSet({
+        workspaceDir,
+        changesetId: created.id,
+        confirmationCode: created.confirmation?.code ?? "",
+      });
+
+      if (!applyResult.ok) {
+        return {
+          path: "block",
+          matchedCommand: "apply",
+          deniedReason: null,
+          reason: "pyreel_mode_enforced",
+          replyText: `ChangeSet auto-apply failed: ${applyResult.reason}.`,
+        };
+      }
+
+      return {
+        path: "block",
+        matchedCommand: "apply",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: `ChangeSet ${applyResult.record.id} auto-applied successfully.`,
+      };
+    }
     if (tokens.includes("--dry-run")) {
       const dryRunRequest = tokens
         .filter((token) => token !== "--dry-run")
