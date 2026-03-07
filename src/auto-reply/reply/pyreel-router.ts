@@ -1,4 +1,15 @@
 import type { OpenClawConfig } from "../../config/config.js";
+import {
+  createPyreelAdsConnectors,
+  type PyreelAdsConnector,
+} from "../../pyreel/connectors/index.js";
+import { buildRankedDiagnosis } from "../../pyreel/diagnose.js";
+import {
+  buildBudgetAllocationSummary,
+  buildCreativeLeaderboard,
+  buildDailySnapshot,
+  buildWeeklyRollup,
+} from "../../pyreel/reporting.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import { parseSlashCommandOrNull } from "./commands-slash-parse.js";
 import {
@@ -93,6 +104,156 @@ function resolveConfirmationTtlSeconds(cfg: OpenClawConfig): number {
     return 900;
   }
   return Math.floor(raw);
+}
+
+function formatDateUtc(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function shiftUtcDays(date: Date, days: number): Date {
+  const shifted = new Date(date);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted;
+}
+
+function pctText(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function resolveConnectorRuntimeConfig(
+  prefix: "META" | "TIKTOK" | "GOOGLE",
+): { baseUrl: string; accessToken: string } | undefined {
+  const baseUrl = process.env[`PYREEL_${prefix}_BASE_URL`]?.trim();
+  const accessToken = process.env[`PYREEL_${prefix}_ACCESS_TOKEN`]?.trim();
+  if (!baseUrl || !accessToken) {
+    return undefined;
+  }
+  return { baseUrl, accessToken };
+}
+
+function resolveAdsConnectors(explicitConnectors?: PyreelAdsConnector[]): PyreelAdsConnector[] {
+  if (explicitConnectors) {
+    return explicitConnectors;
+  }
+  return createPyreelAdsConnectors({
+    meta: resolveConnectorRuntimeConfig("META"),
+    tiktok: resolveConnectorRuntimeConfig("TIKTOK"),
+    google: resolveConnectorRuntimeConfig("GOOGLE"),
+  });
+}
+
+function buildManualReportFallback(): string {
+  return [
+    "Pyreel report (manual fallback)",
+    "",
+    "Connectors are disabled or returned no data. Use this checklist:",
+    "1) Daily snapshot: spend, clicks, conversions, CPA by platform.",
+    "2) Weekly rollup: compare this week vs previous week and note deltas.",
+    "3) Creative leaderboard: rank top 3 creatives by conversions and CPA.",
+    "4) Budget allocation: list spend share vs conversion share per platform.",
+  ].join("\n");
+}
+
+function buildManualNextFallback(): string {
+  return [
+    "Pyreel next (manual fallback)",
+    "",
+    "No connector insights available. Run this action plan:",
+    "- Pause bottom 10-20% creatives by conversion efficiency.",
+    "- Reallocate 10-15% budget to best CPA platform.",
+    "- Ship 2 new hooks based on top performer.",
+    "- Validate with 72-hour checkpoint on conversions and CPA.",
+  ].join("\n");
+}
+
+async function buildConnectorDrivenPyreelReply(params: {
+  action: "report" | "next";
+  connectors?: PyreelAdsConnector[];
+  now?: Date;
+}): Promise<string | null> {
+  const connectors = resolveAdsConnectors(params.connectors).filter((connector) =>
+    connector.isEnabled(),
+  );
+  if (connectors.length === 0) {
+    return null;
+  }
+
+  const now = params.now ?? new Date();
+  const dailyStart = formatDateUtc(now);
+  const weekStart = formatDateUtc(shiftUtcDays(now, -6));
+  const previousWeekStart = formatDateUtc(shiftUtcDays(now, -13));
+  const previousWeekEnd = formatDateUtc(shiftUtcDays(now, -7));
+
+  const metricsByConnector = await Promise.all(
+    connectors.map(async (connector) => ({
+      metricsDaily: await connector.readMetricsSummary({
+        startDate: dailyStart,
+        endDate: dailyStart,
+      }),
+      metricsWeekly: await connector.readMetricsSummary({
+        startDate: weekStart,
+        endDate: dailyStart,
+      }),
+      metricsPreviousWeek: await connector.readMetricsSummary({
+        startDate: previousWeekStart,
+        endDate: previousWeekEnd,
+      }),
+      ads: await connector.readAds(),
+    })),
+  );
+
+  const dailyMetrics = metricsByConnector.flatMap((entry) => entry.metricsDaily);
+  const weeklyMetrics = metricsByConnector.flatMap((entry) => entry.metricsWeekly);
+  const previousWeekMetrics = metricsByConnector.flatMap((entry) => entry.metricsPreviousWeek);
+  const ads = metricsByConnector.flatMap((entry) => entry.ads);
+  if (weeklyMetrics.length === 0) {
+    return null;
+  }
+
+  const dailySnapshot = buildDailySnapshot({ date: dailyStart, metrics: dailyMetrics });
+  const weeklyRollup = buildWeeklyRollup({
+    currentWeekMetrics: weeklyMetrics,
+    previousWeekMetrics,
+  });
+  const leaderboard = buildCreativeLeaderboard({ ads, metrics: weeklyMetrics, limit: 3 });
+  const budgetAllocation = buildBudgetAllocationSummary({ metrics: weeklyMetrics });
+  const diagnosis = buildRankedDiagnosis({
+    dailySnapshot,
+    weeklyRollup,
+    leaderboard,
+    budgetAllocation,
+  });
+
+  if (params.action === "report") {
+    return [
+      "Pyreel report",
+      "",
+      `Daily snapshot (${dailySnapshot.date}): spend ${dailySnapshot.totals.spend.toFixed(2)}, clicks ${dailySnapshot.totals.clicks.toFixed(0)}, conversions ${dailySnapshot.totals.conversions.toFixed(1)}, CPA ${dailySnapshot.totals.cpa.toFixed(2)}.`,
+      `Weekly rollup: spend ${weeklyRollup.currentWeek.spend.toFixed(2)} (${pctText(weeklyRollup.deltas.spendPct)}), conversions ${weeklyRollup.currentWeek.conversions.toFixed(1)} (${pctText(weeklyRollup.deltas.conversionsPct)}), CPA ${weeklyRollup.currentWeek.cpa.toFixed(2)} (${pctText(weeklyRollup.deltas.cpaPct)}).`,
+      "Creative leaderboard:",
+      ...leaderboard.map(
+        (item) =>
+          `- #${item.rank} ${item.platform}/${item.name}: conv ${item.conversions.toFixed(1)}, CPA ${item.cpa.toFixed(2)}, CTR ${pctText(item.ctr)}.`,
+      ),
+      "Budget allocation:",
+      ...budgetAllocation.map(
+        (item) =>
+          `- ${item.platform}: spend share ${pctText(item.spendSharePct)}, conversion share ${pctText(item.conversionSharePct)}.`,
+      ),
+    ].join("\n");
+  }
+
+  return [
+    "Pyreel next",
+    "",
+    "Top ranked diagnoses:",
+    ...diagnosis
+      .slice(0, 3)
+      .map(
+        (item) =>
+          `${item.rank}. ${item.title}\n   Evidence: ${item.evidence}\n   Actions: ${item.actions.join(" ")}\n   Confidence: ${pctText(item.confidence)}\n   Validation: ${item.validation}`,
+      ),
+  ].join("\n");
 }
 
 const WORKFLOW_ACTIONS = new Set<PyreelWorkflowAction>([
@@ -206,6 +367,7 @@ export async function routePyreelMessage(params: {
   cfg: OpenClawConfig;
   workspaceDir?: string;
   restrictedModelRunner?: RestrictedPyreelModelRunner;
+  pyreelAdsConnectors?: PyreelAdsConnector[];
 }): Promise<PyreelRouterDecision> {
   const { ctx, cfg } = params;
   if (cfg.pyreel?.mode !== true) {
@@ -577,6 +739,23 @@ export async function routePyreelMessage(params: {
     if (denied) {
       return denied;
     }
+
+    if (workflowAction === "report" || workflowAction === "next") {
+      const connectorReply = await buildConnectorDrivenPyreelReply({
+        action: workflowAction,
+        connectors: params.pyreelAdsConnectors,
+      });
+      return {
+        path: "block",
+        matchedCommand: workflowAction,
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText:
+          connectorReply ??
+          (workflowAction === "report" ? buildManualReportFallback() : buildManualNextFallback()),
+      };
+    }
+
     const workspaceDir = params.workspaceDir?.trim();
     if (!workspaceDir) {
       return {

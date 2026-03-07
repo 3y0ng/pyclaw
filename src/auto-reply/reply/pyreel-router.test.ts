@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { PyreelAdsConnector } from "../../pyreel/connectors/index.js";
 import { routePyreelMessage } from "./pyreel-router.js";
 import { buildTestCtx } from "./test-ctx.js";
 
@@ -65,7 +66,13 @@ describe("routePyreelMessage", () => {
       expect(decision.path).toBe("block");
       expect(decision.matchedCommand).toBe(action);
       if (decision.path === "block") {
-        expect(decision.replyText).toContain(`Pyreel ${action} requires a workspace directory.`);
+        if (action === "report") {
+          expect(decision.replyText).toContain("Pyreel report (manual fallback)");
+        } else if (action === "next") {
+          expect(decision.replyText).toContain("Pyreel next (manual fallback)");
+        } else {
+          expect(decision.replyText).toContain(`Pyreel ${action} requires a workspace directory.`);
+        }
       }
     }
   });
@@ -387,5 +394,101 @@ describe("routePyreelMessage", () => {
     });
     expect(rbacGrantWithUnscopedAdmin.path).toBe("block");
     expect(rbacGrantWithUnscopedAdmin.deniedReason).toBe("rbac_forbidden");
+  });
+
+  it("uses connector data for /pyreel report", async () => {
+    const connector: PyreelAdsConnector = {
+      platform: "meta",
+      isEnabled: () => true,
+      readCampaigns: async () => [],
+      readAds: async () => [
+        {
+          platform: "meta",
+          adId: "ad-1",
+          campaignId: "cmp-1",
+          name: "UGC Hook A",
+          status: "ACTIVE",
+          platformExtras: {},
+        },
+      ],
+      readMetricsSummary: async ({ startDate, endDate }) => [
+        {
+          platform: "meta",
+          startDate,
+          endDate,
+          campaignId: "cmp-1",
+          adId: "ad-1",
+          impressions: 1000,
+          clicks: 70,
+          spend: 140,
+          conversions: 8,
+          platformExtras: {},
+        },
+      ],
+    };
+
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({ BodyForCommands: "/pyreel report weekly" }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      pyreelAdsConnectors: [connector],
+    });
+
+    expect(decision.path).toBe("block");
+    expect(decision.matchedCommand).toBe("report");
+    if (decision.path === "block") {
+      expect(decision.replyText).toContain("Pyreel report");
+      expect(decision.replyText).toContain("Creative leaderboard:");
+      expect(decision.replyText).toContain("UGC Hook A");
+    }
+  });
+
+  it("falls back to manual templates when connectors return no data", async () => {
+    const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          grants: [{ identity: "slack:operator", role: "operator" }],
+        },
+        null,
+        2,
+      ),
+    );
+    const connector: PyreelAdsConnector = {
+      platform: "meta",
+      isEnabled: () => true,
+      readCampaigns: async () => [],
+      readAds: async () => [],
+      readMetricsSummary: async () => [],
+    };
+
+    const reportDecision = await routePyreelMessage({
+      ctx: buildTestCtx({ BodyForCommands: "/pyreel report weekly" }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      pyreelAdsConnectors: [connector],
+    });
+    expect(reportDecision.path).toBe("block");
+    if (reportDecision.path === "block") {
+      expect(reportDecision.replyText).toContain("Pyreel report (manual fallback)");
+      expect(reportDecision.replyText).toContain("Daily snapshot");
+    }
+
+    const nextDecision = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel next",
+        Surface: "slack",
+        SenderId: "operator",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+      pyreelAdsConnectors: [connector],
+    });
+    expect(nextDecision.path).toBe("block");
+    if (nextDecision.path === "block") {
+      expect(nextDecision.replyText).toContain("Pyreel next (manual fallback)");
+      expect(nextDecision.replyText).toContain("72-hour checkpoint");
+    }
   });
 });
