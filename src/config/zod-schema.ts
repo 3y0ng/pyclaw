@@ -344,6 +344,21 @@ export const OpenClawSchema = z
             ingest: z.boolean().optional(),
             remix: z.boolean().optional(),
             export: z.boolean().optional(),
+            proactive: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
+        proactive: z
+          .object({
+            enabled: z.boolean().optional(),
+            timezone: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+        autoApply: z
+          .object({
+            enabled: z.boolean().optional(),
+            platforms: z.record(z.string(), z.boolean()).optional(),
           })
           .strict()
           .optional(),
