@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { OpenClawConfig } from "../../../../../../config/config.js";
+import type { OpenClawConfig } from "../../../../../config/config.js";
 import { computeNextRunAtMs } from "../../../../../cron/schedule.js";
 import type { FinalizedMsgContext } from "../../../../templating.js";
 import { resolvePyreelWorkspaceFilePath } from "../paths.js";
@@ -162,17 +162,27 @@ function inQuietHours(now: Date, quietHours: ProactiveQuietHours | null): boolea
 
 function normalizeState(state: Partial<PyreelProactiveState>): PyreelProactiveState {
   const base = defaultState();
-  const allowlist = state.allowlist ?? {};
+  const allowlist: {
+    identities?: unknown;
+    surfaces?: unknown;
+  } =
+    state.allowlist && typeof state.allowlist === "object"
+      ? (state.allowlist as { identities?: unknown; surfaces?: unknown })
+      : {};
   return {
     version: 2,
     enabled: state.enabled !== false,
     scheduleKind: normalizeKind(state.scheduleKind),
     allowlist: {
       identities: Array.isArray(allowlist.identities)
-        ? [...new Set(allowlist.identities.map((value) => normalizeIdentity(String(value))))]
+        ? [
+            ...new Set(
+              allowlist.identities.map((value: unknown) => normalizeIdentity(String(value))),
+            ),
+          ]
         : base.allowlist.identities,
       surfaces: Array.isArray(allowlist.surfaces)
-        ? [...new Set(allowlist.surfaces.map((value) => normalizeSurface(String(value))))]
+        ? [...new Set(allowlist.surfaces.map((value: unknown) => normalizeSurface(String(value))))]
         : base.allowlist.surfaces,
     },
     quietHours: normalizeQuietHours(state.quietHours),
@@ -417,7 +427,7 @@ export function autoApplyGuardEnabled(cfg: OpenClawConfig, ctx: FinalizedMsgCont
     return true;
   }
   const surface = (ctx.Surface ?? ctx.Provider ?? "unknown").trim().toLowerCase();
-  return platformFlags[surface] === true;
+  return platformFlags[surface];
 }
 
 export function isLowRiskAutoApplyRequest(request: string): boolean {

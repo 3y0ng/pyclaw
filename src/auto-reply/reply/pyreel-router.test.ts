@@ -38,6 +38,9 @@ describe("routePyreelMessage", () => {
 
     expect(decision.path).toBe("block");
     expect(decision.deniedReason).toBe("non_pyreel_input");
+    if (decision.path === "block") {
+      expect(decision.replyText).toContain("Pyreel mode: use /pyreel");
+    }
   });
 
   it("supports /pyreel help", async () => {
@@ -432,6 +435,212 @@ describe("routePyreelMessage", () => {
     expect(apply.path).toBe("block");
     if (apply.path === "block") {
       expect(apply.replyText).toContain("applied successfully");
+    }
+
+    const applyAgain = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: `/pyreel apply ${changesetId} ${code}`,
+        Surface: "slack",
+        SenderId: "approver",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(applyAgain.path).toBe("block");
+    if (applyAgain.path === "block") {
+      expect(applyAgain.replyText).toContain("ChangeSet apply failed: already_applied.");
+    }
+  });
+
+  it("returns confirmation_expired when the confirmation TTL is exceeded", async () => {
+    const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify(
+        { version: 1, grants: [{ identity: "slack:approver", role: "approver" }] },
+        null,
+        2,
+      ),
+    );
+
+    const dryRun = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel apply --dry-run update copy",
+        Surface: "slack",
+        SenderId: "approver",
+      }),
+      cfg: { pyreel: { mode: true, writes: { confirmationTtlSeconds: 1 } } } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(dryRun.path).toBe("block");
+    if (dryRun.path !== "block") {
+      return;
+    }
+
+    const match = dryRun.replyText.match(/ChangeSet\s+(\S+)\. Confirm with .* (\d{6})\./);
+    expect(match).toBeTruthy();
+    const changesetId = match?.[1] ?? "";
+    const confirmationCode = match?.[2] ?? "";
+    const changesetPath = path.join(
+      workspaceDir,
+      "pyreel",
+      "workspace",
+      "changesets",
+      `${changesetId}.json`,
+    );
+    const raw = JSON.parse(await fs.readFile(changesetPath, "utf8")) as {
+      confirmation?: { expiresAt: string };
+    };
+    if (!raw.confirmation) {
+      throw new Error("missing confirmation in changeset test fixture");
+    }
+    raw.confirmation.expiresAt = new Date(Date.now() - 5_000).toISOString();
+    await fs.writeFile(changesetPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+
+    const apply = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: `/pyreel apply ${changesetId} ${confirmationCode}`,
+        Surface: "slack",
+        SenderId: "approver",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(apply.path).toBe("block");
+    if (apply.path === "block") {
+      expect(apply.replyText).toContain("ChangeSet apply failed: confirmation_expired.");
+    }
+  });
+
+  it("rejects destructive auto-apply requests with a user-visible low-risk message", async () => {
+    const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify(
+        { version: 1, grants: [{ identity: "slack:approver", role: "approver" }] },
+        null,
+        2,
+      ),
+    );
+
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel apply --auto-apply delete archived adsets",
+        Surface: "slack",
+        SenderId: "approver",
+      }),
+      cfg: {
+        pyreel: {
+          mode: true,
+          autoApply: { enabled: true, platforms: { slack: true } },
+        },
+      } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(decision.path).toBe("block");
+    expect(decision.matchedCommand).toBe("apply");
+    if (decision.path === "block") {
+      expect(decision.replyText).toContain("request is not low-risk");
+    }
+  });
+
+  it("requires approver for apply and admin for proactive", async () => {
+    const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          grants: [
+            { identity: "slack:operator", role: "operator" },
+            { identity: "slack:approver", role: "approver" },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const applyDenied = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel apply --dry-run tweak copy",
+        Surface: "slack",
+        SenderId: "operator",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+    expect(applyDenied.path).toBe("block");
+    expect(applyDenied.deniedReason).toBe("rbac_forbidden");
+
+    const proactiveDenied = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive status",
+        Surface: "slack",
+        SenderId: "approver",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+    expect(proactiveDenied.path).toBe("block");
+    expect(proactiveDenied.deniedReason).toBe("rbac_forbidden");
+  });
+
+  it("uses manual fallback when provided connectors are disabled", async () => {
+    const connector: PyreelAdsConnector = {
+      platform: "meta",
+      isEnabled: () => false,
+      readCampaigns: async () => [],
+      readAds: async () => [],
+      readMetricsSummary: async () => [],
+    };
+
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({ BodyForCommands: "/pyreel report" }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      pyreelAdsConnectors: [connector],
+    });
+
+    expect(decision.path).toBe("block");
+    expect(decision.matchedCommand).toBe("report");
+    if (decision.path === "block") {
+      expect(decision.replyText).toContain("manual fallback");
+    }
+  });
+
+  it("rejects traversal-like changeset ids with a user-visible error", async () => {
+    const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify(
+        { version: 1, grants: [{ identity: "slack:approver", role: "approver" }] },
+        null,
+        2,
+      ),
+    );
+
+    const decision = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel apply ../escape 123456",
+        Surface: "slack",
+        SenderId: "approver",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+
+    expect(decision.path).toBe("block");
+    expect(decision.matchedCommand).toBe("apply");
+    if (decision.path === "block") {
+      expect(decision.replyText).toContain("invalid_changeset_id");
     }
   });
 
