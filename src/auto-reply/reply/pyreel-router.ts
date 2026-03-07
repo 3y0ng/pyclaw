@@ -29,11 +29,18 @@ import {
   createDryRunChangeSet,
 } from "./pyreel/workspace/changesets/store.js";
 import {
+  allowProactiveTarget,
   autoApplyGuardEnabled,
+  disallowProactiveTarget,
   evaluateProactiveGuard,
   isLowRiskAutoApplyRequest,
+  loadProactiveState,
   markProactivePosted,
+  renderProactiveStatus,
   resolveProactiveReportDue,
+  setProactiveEnabled,
+  setProactiveQuietHours,
+  setProactiveSchedule,
   type ProactiveReportKind,
 } from "./pyreel/workspace/proactive/state.js";
 
@@ -347,6 +354,47 @@ function resolveProactiveKind(raw: string): ProactiveReportKind | null {
   return null;
 }
 
+function resolveProactiveTarget(
+  raw: string,
+): { target: "identity" | "surface"; value: string } | null {
+  const tokens = raw.split(/\s+/).filter((token) => token.length > 0);
+  if (tokens.length < 2) {
+    return null;
+  }
+
+  const target = tokens[0]?.toLowerCase();
+  const value = tokens.slice(1).join(" ").trim();
+  if (!value) {
+    return null;
+  }
+
+  if (target === "identity") {
+    return { target: "identity", value };
+  }
+  if (target === "surface") {
+    return { target: "surface", value };
+  }
+  return null;
+}
+
+function resolveQuietHours(raw: string): { startHour: number; endHour: number } | null {
+  const tokens = raw.split(/\s+/).filter((token) => token.length > 0);
+  if (tokens.length < 2) {
+    return null;
+  }
+
+  const startHour = Number.parseInt(tokens[0] ?? "", 10);
+  const endHour = Number.parseInt(tokens[1] ?? "", 10);
+  if (!Number.isFinite(startHour) || !Number.isFinite(endHour)) {
+    return null;
+  }
+
+  return {
+    startHour: Math.min(23, Math.max(0, Math.floor(startHour))),
+    endHour: Math.min(23, Math.max(0, Math.floor(endHour))),
+  };
+}
+
 function resolveRbacCommandForAuth(args: string): PyreelRbacCommand {
   const tokens = args.split(/\s+/).filter((token) => token.length > 0);
   const subcommand = (tokens[0] ?? "status").toLowerCase();
@@ -508,28 +556,96 @@ export async function routePyreelMessage(params: {
     }
 
     if (proactiveCommand.subcommand === "status") {
+      const state = await loadProactiveState(workspaceDir);
       return {
         path: "block",
         matchedCommand: "proactive",
         deniedReason: null,
         reason: "pyreel_mode_enforced",
-        replyText: "Pyreel proactive status command received.",
+        replyText: `Pyreel proactive status:\n${renderProactiveStatus(state)}`,
       };
     }
 
-    if (
-      proactiveCommand.subcommand === "on" ||
-      proactiveCommand.subcommand === "off" ||
-      proactiveCommand.subcommand === "allow" ||
-      proactiveCommand.subcommand === "disallow" ||
-      proactiveCommand.subcommand === "quiet-hours"
-    ) {
+    if (proactiveCommand.subcommand === "on" || proactiveCommand.subcommand === "off") {
+      const nextState = await setProactiveEnabled(
+        workspaceDir,
+        proactiveCommand.subcommand === "on",
+      );
       return {
         path: "block",
         matchedCommand: "proactive",
         deniedReason: null,
         reason: "pyreel_mode_enforced",
-        replyText: `Pyreel proactive ${proactiveCommand.subcommand} command received.`,
+        replyText: `Pyreel proactive ${proactiveCommand.subcommand}.\n${renderProactiveStatus(nextState)}`,
+      };
+    }
+
+    if (proactiveCommand.subcommand === "allow" || proactiveCommand.subcommand === "disallow") {
+      const target = resolveProactiveTarget(proactiveCommand.rest);
+      if (!target) {
+        return {
+          path: "block",
+          matchedCommand: "proactive",
+          deniedReason: null,
+          reason: "pyreel_mode_enforced",
+          replyText: "Usage: /pyreel proactive allow <identity|surface> <value> (or disallow)",
+        };
+      }
+
+      const nextState =
+        proactiveCommand.subcommand === "allow"
+          ? await allowProactiveTarget({ workspaceDir, ...target })
+          : await disallowProactiveTarget({ workspaceDir, ...target });
+      return {
+        path: "block",
+        matchedCommand: "proactive",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: `Pyreel proactive ${proactiveCommand.subcommand} ${target.target} ${target.value}.\n${renderProactiveStatus(nextState)}`,
+      };
+    }
+
+    if (proactiveCommand.subcommand === "quiet-hours") {
+      const quietHoursArg = proactiveCommand.rest.trim().toLowerCase();
+      if (!quietHoursArg) {
+        return {
+          path: "block",
+          matchedCommand: "proactive",
+          deniedReason: null,
+          reason: "pyreel_mode_enforced",
+          replyText: "Usage: /pyreel proactive quiet-hours <startHour> <endHour>|off",
+        };
+      }
+
+      if (quietHoursArg !== "off") {
+        const quietHours = resolveQuietHours(proactiveCommand.rest);
+        if (!quietHours) {
+          return {
+            path: "block",
+            matchedCommand: "proactive",
+            deniedReason: null,
+            reason: "pyreel_mode_enforced",
+            replyText: "Usage: /pyreel proactive quiet-hours <startHour> <endHour>|off",
+          };
+        }
+
+        const nextState = await setProactiveQuietHours(workspaceDir, quietHours);
+        return {
+          path: "block",
+          matchedCommand: "proactive",
+          deniedReason: null,
+          reason: "pyreel_mode_enforced",
+          replyText: `Pyreel proactive quiet-hours updated.\n${renderProactiveStatus(nextState)}`,
+        };
+      }
+
+      const nextState = await setProactiveQuietHours(workspaceDir, null);
+      return {
+        path: "block",
+        matchedCommand: "proactive",
+        deniedReason: null,
+        reason: "pyreel_mode_enforced",
+        replyText: `Pyreel proactive quiet-hours updated.\n${renderProactiveStatus(nextState)}`,
       };
     }
 
@@ -543,6 +659,8 @@ export async function routePyreelMessage(params: {
         replyText: "Usage: /pyreel proactive schedule <daily|weekly>",
       };
     }
+
+    await setProactiveSchedule(workspaceDir, kind);
 
     const guard = await evaluateProactiveGuard({
       cfg,
