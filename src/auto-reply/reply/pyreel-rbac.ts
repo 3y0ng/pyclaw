@@ -1,8 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { FinalizedMsgContext } from "../templating.js";
-
-const ACL_PATH_PARTS = ["pyreel", "workspace", "acl.json"];
+import { resolvePyreelWorkspaceFilePath } from "./pyreel/workspace/paths.js";
 
 export type PyreelRole = "viewer" | "operator" | "approver" | "admin";
 
@@ -93,7 +92,7 @@ function parseRole(rawRole: unknown): PyreelRole | null {
 }
 
 async function readAclFile(workspaceDir: string): Promise<PyreelAclFile> {
-  const aclPath = path.join(workspaceDir, ...ACL_PATH_PARTS);
+  const aclPath = resolvePyreelWorkspaceFilePath(workspaceDir, "acl.json");
   try {
     const raw = await fs.readFile(aclPath, "utf8");
     const parsed = JSON.parse(raw) as Partial<PyreelAclFile>;
@@ -124,7 +123,7 @@ async function readAclFile(workspaceDir: string): Promise<PyreelAclFile> {
 }
 
 async function writeAclFile(workspaceDir: string, acl: PyreelAclFile): Promise<void> {
-  const aclPath = path.join(workspaceDir, ...ACL_PATH_PARTS);
+  const aclPath = resolvePyreelWorkspaceFilePath(workspaceDir, "acl.json");
   await fs.mkdir(path.dirname(aclPath), { recursive: true });
   await fs.writeFile(aclPath, `${JSON.stringify(acl, null, 2)}\n`, "utf8");
 }

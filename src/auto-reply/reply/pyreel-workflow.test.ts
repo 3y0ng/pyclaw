@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { executePyreelWorkflow, type PyreelWorkflowAction } from "./pyreel-workflow.js";
+import { resolvePyreelWorkspacePath } from "./pyreel/workspace/paths.js";
 
 const TEMP_DIRS: string[] = [];
 
@@ -41,7 +42,11 @@ describe("executePyreelWorkflow", () => {
         },
       });
 
-      expect(result.relativeArtifactPath.startsWith(".pyreel/artifacts/")).toBe(true);
+      expect(result.relativeArtifactPath).toMatch(
+        new RegExp(
+          `^pyreel/workspace/(briefs|plans|research|scripts|reports|experiments)/\\d{8}_\\d{4}_${testCase.action}\\.md$`,
+        ),
+      );
       const artifactPath = path.join(workspaceDir, result.relativeArtifactPath);
       const artifactContent = await fs.readFile(artifactPath, "utf8");
       expect(artifactContent).toContain(testCase.heading);
@@ -50,4 +55,13 @@ describe("executePyreelWorkflow", () => {
       expect(seenAllowedTools).toEqual([]);
     });
   }
+  it("rejects absolute and traversal paths in workspace helper", async () => {
+    const workspaceDir = await createWorkspace();
+    expect(() => resolvePyreelWorkspacePath(workspaceDir, "../escape.md")).toThrow(
+      "relativePath cannot contain '..'",
+    );
+    expect(() => resolvePyreelWorkspacePath(workspaceDir, "/tmp/escape.md")).toThrow(
+      "relativePath must be relative",
+    );
+  });
 });

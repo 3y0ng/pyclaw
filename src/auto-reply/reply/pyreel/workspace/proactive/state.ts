@@ -3,9 +3,7 @@ import path from "node:path";
 import type { OpenClawConfig } from "../../../../../../config/config.js";
 import { computeNextRunAtMs } from "../../../../../cron/schedule.js";
 import type { FinalizedMsgContext } from "../../../../templating.js";
-
-const PROACTIVE_STATE_ROOT = [".pyreel", "workspace", "state"];
-const PROACTIVE_STATE_FILE = "proactive.json";
+import { resolvePyreelWorkspaceFilePath } from "../paths.js";
 
 export type ProactiveReportKind = "daily" | "weekly";
 
@@ -57,7 +55,7 @@ function defaultState(): PyreelProactiveState {
 }
 
 function proactiveStatePath(workspaceDir: string): string {
-  return path.join(workspaceDir, ...PROACTIVE_STATE_ROOT, PROACTIVE_STATE_FILE);
+  return resolvePyreelWorkspaceFilePath(workspaceDir, "state.json");
 }
 
 function normalizeIdentity(identity: string): string {
