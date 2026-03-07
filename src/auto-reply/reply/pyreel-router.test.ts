@@ -86,10 +86,19 @@ describe("routePyreelMessage", () => {
 
   it("supports /pyreel proactive on|off|status|allow|disallow|quiet-hours", async () => {
     const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify({ version: 1, grants: [{ identity: "slack:admin", role: "admin" }] }, null, 2),
+    );
     const proactiveCommands = ["on", "off", "status", "allow", "disallow", "quiet-hours"];
     for (const subcommand of proactiveCommands) {
       const decision = await routePyreelMessage({
-        ctx: buildTestCtx({ BodyForCommands: `/pyreel proactive ${subcommand}` }),
+        ctx: buildTestCtx({
+          BodyForCommands: `/pyreel proactive ${subcommand}`,
+          Surface: "slack",
+          SenderId: "admin",
+        }),
         cfg: { pyreel: { mode: true } } as OpenClawConfig,
         workspaceDir,
       });
@@ -104,8 +113,17 @@ describe("routePyreelMessage", () => {
 
   it("supports /pyreel proactive schedule", async () => {
     const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify({ version: 1, grants: [{ identity: "slack:admin", role: "admin" }] }, null, 2),
+    );
     const usageDecision = await routePyreelMessage({
-      ctx: buildTestCtx({ BodyForCommands: "/pyreel proactive schedule" }),
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive schedule",
+        Surface: "slack",
+        SenderId: "admin",
+      }),
       cfg: { pyreel: { mode: true } } as OpenClawConfig,
       workspaceDir,
     });
@@ -117,7 +135,11 @@ describe("routePyreelMessage", () => {
     }
 
     const scheduledDecision = await routePyreelMessage({
-      ctx: buildTestCtx({ BodyForCommands: "/pyreel proactive schedule daily", Surface: "slack" }),
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel proactive schedule daily",
+        Surface: "slack",
+        SenderId: "admin",
+      }),
       cfg: {
         pyreel: { mode: true, features: { proactive: false }, proactive: { enabled: false } },
       } as OpenClawConfig,
@@ -188,7 +210,7 @@ describe("routePyreelMessage", () => {
 
     const grant = await routePyreelMessage({
       ctx: buildTestCtx({
-        BodyForCommands: "/pyreel rbac grant slack:alice editor",
+        BodyForCommands: "/pyreel rbac grant slack:alice operator",
         Surface: "slack",
         SenderId: "bob",
       }),
@@ -213,10 +235,20 @@ describe("routePyreelMessage", () => {
 
   it("enforces global write flag for /pyreel apply", async () => {
     const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify(
+        { version: 1, grants: [{ identity: "slack:approver", role: "approver" }] },
+        null,
+        2,
+      ),
+    );
     const decision = await routePyreelMessage({
       ctx: buildTestCtx({
         BodyForCommands: "/pyreel apply --dry-run update clips",
         Surface: "slack",
+        SenderId: "approver",
       }),
       cfg: { pyreel: { mode: true, writes: { enabled: false } } } as OpenClawConfig,
       workspaceDir,
@@ -229,8 +261,21 @@ describe("routePyreelMessage", () => {
 
   it("supports dry-run plus confirmation apply flow", async () => {
     const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify(
+        { version: 1, grants: [{ identity: "slack:approver", role: "approver" }] },
+        null,
+        2,
+      ),
+    );
     const dryRun = await routePyreelMessage({
-      ctx: buildTestCtx({ BodyForCommands: "/pyreel apply --dry-run adjust captions" }),
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel apply --dry-run adjust captions",
+        Surface: "slack",
+        SenderId: "approver",
+      }),
       cfg: { pyreel: { mode: true } } as OpenClawConfig,
       workspaceDir,
     });
@@ -246,7 +291,11 @@ describe("routePyreelMessage", () => {
     const code = match?.[2] ?? "";
 
     const apply = await routePyreelMessage({
-      ctx: buildTestCtx({ BodyForCommands: `/pyreel apply ${changesetId} ${code}` }),
+      ctx: buildTestCtx({
+        BodyForCommands: `/pyreel apply ${changesetId} ${code}`,
+        Surface: "slack",
+        SenderId: "approver",
+      }),
       cfg: { pyreel: { mode: true } } as OpenClawConfig,
       workspaceDir,
     });
@@ -271,5 +320,72 @@ describe("routePyreelMessage", () => {
         "/pyreel proactive on|off|status|schedule|allow|disallow|quiet-hours",
       );
     }
+  });
+
+  it("enforces role gating and scoped identity for high-risk actions", async () => {
+    const workspaceDir = await createWorkspace();
+    await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          grants: [
+            { identity: "slack:operator", role: "operator" },
+            { identity: "operator", role: "approver" },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const operatorBrief = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel brief draft",
+        Surface: "slack",
+        SenderId: "operator",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+    expect(operatorBrief.path).toBe("block");
+    expect(operatorBrief.matchedCommand).toBe("brief");
+
+    const operatorApply = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel apply --dry-run test",
+        Surface: "slack",
+        SenderId: "operator",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+    expect(operatorApply.path).toBe("block");
+    expect(operatorApply.deniedReason).toBe("rbac_forbidden");
+
+    const reportAsViewer = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel report weekly",
+        Surface: "slack",
+        SenderId: "new-user",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+    expect(reportAsViewer.path).toBe("block");
+    expect(reportAsViewer.deniedReason).toBeNull();
+
+    const rbacGrantWithUnscopedAdmin = await routePyreelMessage({
+      ctx: buildTestCtx({
+        BodyForCommands: "/pyreel rbac grant slack:alice operator",
+        Surface: "slack",
+        SenderId: "operator",
+      }),
+      cfg: { pyreel: { mode: true } } as OpenClawConfig,
+      workspaceDir,
+    });
+    expect(rbacGrantWithUnscopedAdmin.path).toBe("block");
+    expect(rbacGrantWithUnscopedAdmin.deniedReason).toBe("rbac_forbidden");
   });
 });
