@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   confirmAndApplyChangeSet,
   createDryRunChangeSet,
   loadChangeSet,
   resolveConfirmationExpiry,
+  type PyreelPlatformWriteAdapter,
 } from "./store.js";
 
 const TEMP_DIRS: string[] = [];
@@ -15,6 +16,32 @@ async function createWorkspace(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pyreel-changesets-"));
   TEMP_DIRS.push(dir);
   return dir;
+}
+
+async function withEnv(
+  vars: Record<string, string | undefined>,
+  run: () => Promise<void>,
+): Promise<void> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(vars)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    await run();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 afterEach(async () => {
@@ -26,12 +53,13 @@ describe("pyreel changeset store", () => {
     const workspaceDir = await createWorkspace();
     const created = await createDryRunChangeSet({
       workspaceDir,
-      request: "dry-run update",
+      request: "pause meta ads budget +20",
       confirmationTtlSeconds: 120,
     });
 
     expect(created.status).toBe("awaiting_confirmation");
     expect(created.confirmation?.code).toMatch(/^\d{6}$/);
+    expect(created.analysis?.riskLevel).toBe("low");
 
     const loaded = await loadChangeSet(workspaceDir, created.id);
     expect(loaded?.id).toBe(created.id);
@@ -45,7 +73,7 @@ describe("pyreel changeset store", () => {
     const workspaceDir = await createWorkspace();
     const created = await createDryRunChangeSet({
       workspaceDir,
-      request: "dry-run invalid code",
+      request: "pause meta",
       confirmationTtlSeconds: 120,
     });
 
@@ -65,7 +93,7 @@ describe("pyreel changeset store", () => {
     const workspaceDir = await createWorkspace();
     const created = await createDryRunChangeSet({
       workspaceDir,
-      request: "dry-run expired",
+      request: "pause meta",
       confirmationTtlSeconds: 1,
     });
 
@@ -96,6 +124,232 @@ describe("pyreel changeset store", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe("confirmation_expired");
+    }
+  });
+
+  it("enforces global write gate", async () => {
+    await withEnv({ PYREEL_ENABLE_WRITES: "0" }, async () => {
+      const workspaceDir = await createWorkspace();
+      const created = await createDryRunChangeSet({
+        workspaceDir,
+        request: "pause meta",
+        confirmationTtlSeconds: 120,
+      });
+      const result = await confirmAndApplyChangeSet({
+        workspaceDir,
+        changesetId: created.id,
+        confirmationCode: created.confirmation?.code ?? "",
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("writes_disabled");
+      }
+    });
+  });
+
+  it("enforces platform write gate", async () => {
+    await withEnv({ PYREEL_ENABLE_META_WRITES: "0" }, async () => {
+      const workspaceDir = await createWorkspace();
+      const created = await createDryRunChangeSet({
+        workspaceDir,
+        request: "pause meta campaigns",
+        confirmationTtlSeconds: 120,
+      });
+      const result = await confirmAndApplyChangeSet({
+        workspaceDir,
+        changesetId: created.id,
+        confirmationCode: created.confirmation?.code ?? "",
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe("meta_writes_disabled");
+      }
+    });
+  });
+
+  it("keeps idempotency strict after apply", async () => {
+    const workspaceDir = await createWorkspace();
+    const created = await createDryRunChangeSet({
+      workspaceDir,
+      request: "pause meta",
+      confirmationTtlSeconds: 120,
+    });
+
+    const first = await confirmAndApplyChangeSet({
+      workspaceDir,
+      changesetId: created.id,
+      confirmationCode: created.confirmation?.code ?? "",
+    });
+    expect(first.ok).toBe(true);
+
+    const second = await confirmAndApplyChangeSet({
+      workspaceDir,
+      changesetId: created.id,
+      confirmationCode: created.confirmation?.code ?? "",
+    });
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.reason).toBe("already_applied");
+    }
+  });
+
+  it("blocks medium/high risk from auto-apply", async () => {
+    const workspaceDir = await createWorkspace();
+    const created = await createDryRunChangeSet({
+      workspaceDir,
+      request: "delete meta campaigns",
+      confirmationTtlSeconds: 120,
+    });
+
+    const result = await confirmAndApplyChangeSet({
+      workspaceDir,
+      changesetId: created.id,
+      confirmationCode: created.confirmation?.code ?? "",
+      autoApply: true,
+      platformAdapters: {},
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("auto_apply_risk_denied_medium_or_high");
+    }
+  });
+
+  it("enforces max operations per apply cap", async () => {
+    await withEnv({ PYREEL_MAX_OPERATIONS_PER_APPLY: "1" }, async () => {
+      const workspaceDir = await createWorkspace();
+      const created = await createDryRunChangeSet({
+        workspaceDir,
+        request: "pause meta and increase meta budget +1",
+        confirmationTtlSeconds: 120,
+      });
+      const adapter: PyreelPlatformWriteAdapter = {
+        platform: "meta",
+        applyLowRiskUpdates: vi.fn(async () => {}),
+      };
+      const result = await confirmAndApplyChangeSet({
+        workspaceDir,
+        changesetId: created.id,
+        confirmationCode: created.confirmation?.code ?? "",
+        autoApply: true,
+        platformAdapters: { meta: adapter },
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toContain("max_operations_per_apply_exceeded");
+      }
+    });
+  });
+
+  it("enforces max operations per day cap", async () => {
+    await withEnv({ PYREEL_MAX_OPERATIONS_PER_DAY: "1" }, async () => {
+      const workspaceDir = await createWorkspace();
+      const first = await createDryRunChangeSet({
+        workspaceDir,
+        request: "pause meta",
+        confirmationTtlSeconds: 120,
+      });
+      const adapter: PyreelPlatformWriteAdapter = {
+        platform: "meta",
+        applyLowRiskUpdates: vi.fn(async () => {}),
+      };
+      const firstResult = await confirmAndApplyChangeSet({
+        workspaceDir,
+        changesetId: first.id,
+        confirmationCode: first.confirmation?.code ?? "",
+        autoApply: true,
+        platformAdapters: { meta: adapter },
+      });
+      expect(firstResult.ok).toBe(true);
+
+      const second = await createDryRunChangeSet({
+        workspaceDir,
+        request: "enable meta",
+        confirmationTtlSeconds: 120,
+      });
+      const secondResult = await confirmAndApplyChangeSet({
+        workspaceDir,
+        changesetId: second.id,
+        confirmationCode: second.confirmation?.code ?? "",
+        autoApply: true,
+        platformAdapters: { meta: adapter },
+      });
+      expect(secondResult.ok).toBe(false);
+      if (!secondResult.ok) {
+        expect(secondResult.reason).toContain("max_operations_per_day_exceeded");
+      }
+    });
+  });
+
+  it("enforces max budget delta cap", async () => {
+    await withEnv({ PYREEL_MAX_BUDGET_DELTA: "10" }, async () => {
+      const workspaceDir = await createWorkspace();
+      const created = await createDryRunChangeSet({
+        workspaceDir,
+        request: "increase meta budget +50",
+        confirmationTtlSeconds: 120,
+      });
+      const adapter: PyreelPlatformWriteAdapter = {
+        platform: "meta",
+        applyLowRiskUpdates: vi.fn(async () => {}),
+      };
+      const result = await confirmAndApplyChangeSet({
+        workspaceDir,
+        changesetId: created.id,
+        confirmationCode: created.confirmation?.code ?? "",
+        autoApply: true,
+        platformAdapters: { meta: adapter },
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toContain("max_budget_delta_exceeded");
+      }
+    });
+  });
+
+  it("routes low-risk operations to platform adapters", async () => {
+    const workspaceDir = await createWorkspace();
+    const created = await createDryRunChangeSet({
+      workspaceDir,
+      request: "pause meta and increase meta budget +5",
+      confirmationTtlSeconds: 120,
+    });
+
+    const adapter: PyreelPlatformWriteAdapter = {
+      platform: "meta",
+      applyLowRiskUpdates: vi.fn(async () => {}),
+    };
+    const result = await confirmAndApplyChangeSet({
+      workspaceDir,
+      changesetId: created.id,
+      confirmationCode: created.confirmation?.code ?? "",
+      autoApply: true,
+      platformAdapters: { meta: adapter },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(adapter.applyLowRiskUpdates).toHaveBeenCalledOnce();
+  });
+
+  it("rejects ambiguous auto-apply operations to draft-only output", async () => {
+    const workspaceDir = await createWorkspace();
+    const created = await createDryRunChangeSet({
+      workspaceDir,
+      request: "pause or enable maybe",
+      confirmationTtlSeconds: 120,
+    });
+
+    const result = await confirmAndApplyChangeSet({
+      workspaceDir,
+      changesetId: created.id,
+      confirmationCode: created.confirmation?.code ?? "",
+      autoApply: true,
+      platformAdapters: {},
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("auto_apply_risk_denied_medium_or_high");
     }
   });
 
