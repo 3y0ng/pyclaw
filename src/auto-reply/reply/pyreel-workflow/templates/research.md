@@ -4,6 +4,14 @@
 
 {{request}}
 
-## Output
+## Research
 
 {{generated_text}}
+
+## Assumptions
+
+- _TBD_
+
+## Missing Info
+
+- _TBD_

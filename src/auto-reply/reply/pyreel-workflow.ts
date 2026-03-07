@@ -3,7 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   resolvePyreelWorkspaceRelativePath,
-  resolvePyreelWorkspaceSubdirPath,
   resolvePyreelWorkspacePath,
 } from "./pyreel/workspace/paths.js";
 
@@ -44,13 +43,29 @@ function fillTemplate(template: string, values: Record<string, string>): string 
 }
 
 const WORKFLOW_OUTPUT_DIR_BY_ACTION: Record<PyreelWorkflowAction, string> = {
-  brief: "briefs",
-  plan: "plans",
-  research: "research",
-  scripts: "scripts",
-  report: "reports",
-  next: "experiments",
+  brief: "workflow/brief",
+  plan: "workflow/plan",
+  research: "workflow/research",
+  scripts: "workflow/scripts",
+  report: "workflow/report",
+  next: "workflow/next",
 };
+
+const WORKFLOW_SECTIONS_BY_ACTION: Record<PyreelWorkflowAction, string[]> = {
+  brief: ["Request", "Brief", "Assumptions", "Missing Info"],
+  plan: ["Request", "Plan", "Assumptions", "Missing Info"],
+  research: ["Request", "Research", "Assumptions", "Missing Info"],
+  scripts: ["Request", "Scripts", "Assumptions", "Missing Info"],
+  report: ["Request", "Report"],
+  next: ["Request", "Next Steps", "Assumptions", "Missing Info"],
+};
+
+function parseTemplateHeadings(template: string): string[] {
+  return template
+    .split("\n")
+    .filter((line) => line.startsWith("## "))
+    .map((line) => line.slice(3).trim());
+}
 
 function formatWorkflowFileName(action: PyreelWorkflowAction, now: Date): string {
   const year = now.getUTCFullYear();
@@ -95,11 +110,25 @@ export async function executePyreelWorkflow(params: {
 }): Promise<{ summary: string; relativeArtifactPath: string; heading: string }> {
   const title = ACTION_TITLES[params.action];
   const template = await loadTemplate(params.action);
+  const expectedSections = WORKFLOW_SECTIONS_BY_ACTION[params.action];
+  const expectedHeadings = expectedSections;
+  const actualHeadings = parseTemplateHeadings(template);
+  if (actualHeadings.join("|") !== expectedHeadings.join("|")) {
+    throw new Error(
+      `Invalid template headings for ${params.action}. Expected [${expectedHeadings.join(", ")}], got [${actualHeadings.join(", ")}].`,
+    );
+  }
+
+  const request = params.request.trim() || "No additional request provided.";
+  const assumptions = "- _TBD_";
+  const missingInfo = "- _TBD_";
 
   const prompt = fillTemplate(template, {
     action_title: title,
-    request: params.request.trim() || "No additional request provided.",
+    request,
     generated_text: "",
+    assumptions,
+    missing_info: missingInfo,
   });
 
   const generatedText = await runRestrictedModelTextGeneration({
@@ -111,20 +140,18 @@ export async function executePyreelWorkflow(params: {
 
   const output = fillTemplate(template, {
     action_title: title,
-    request: params.request.trim() || "No additional request provided.",
+    request,
     generated_text: generatedText.trim(),
+    assumptions,
+    missing_info: missingInfo,
   }).trimEnd();
 
-  const artifactsDir = resolvePyreelWorkspaceSubdirPath(
-    params.workspaceDir,
-    WORKFLOW_OUTPUT_DIR_BY_ACTION[params.action],
-  );
-  await fs.mkdir(artifactsDir, { recursive: true });
   const artifactFileName = formatWorkflowFileName(params.action, new Date());
   const artifactPath = resolvePyreelWorkspacePath(
     params.workspaceDir,
     path.join(WORKFLOW_OUTPUT_DIR_BY_ACTION[params.action], artifactFileName),
   );
+  await fs.mkdir(path.dirname(artifactPath), { recursive: true });
   await fs.writeFile(artifactPath, `${output}\n`, "utf8");
 
   const relativeArtifactPath = resolvePyreelWorkspaceRelativePath(
@@ -132,7 +159,7 @@ export async function executePyreelWorkflow(params: {
     artifactPath,
   );
   return {
-    summary: `Pyreel ${params.action} ready: ${relativeArtifactPath}`,
+    summary: `${params.action}: ${relativeArtifactPath}`,
     relativeArtifactPath,
     heading: `# Pyreel ${title}`,
   };

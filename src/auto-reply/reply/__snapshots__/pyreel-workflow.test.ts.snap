@@ -1,0 +1,119 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`executePyreelWorkflow > writes brief artifact with stable section ordering and workspace path 1`] = `
+"# Pyreel Brief
+
+## Request
+
+Ship this milestone
+
+## Brief
+
+BRIEF draft body
+
+## Assumptions
+
+- _TBD_
+
+## Missing Info
+
+- _TBD_
+"
+`;
+
+exports[`executePyreelWorkflow > writes next artifact with stable section ordering and workspace path 1`] = `
+"# Pyreel Next
+
+## Request
+
+Ship this milestone
+
+## Next Steps
+
+NEXT draft body
+
+## Assumptions
+
+- _TBD_
+
+## Missing Info
+
+- _TBD_
+"
+`;
+
+exports[`executePyreelWorkflow > writes plan artifact with stable section ordering and workspace path 1`] = `
+"# Pyreel Plan
+
+## Request
+
+Ship this milestone
+
+## Plan
+
+PLAN draft body
+
+## Assumptions
+
+- _TBD_
+
+## Missing Info
+
+- _TBD_
+"
+`;
+
+exports[`executePyreelWorkflow > writes report artifact with stable section ordering and workspace path 1`] = `
+"# Pyreel Report
+
+## Request
+
+Ship this milestone
+
+## Report
+
+REPORT draft body
+"
+`;
+
+exports[`executePyreelWorkflow > writes research artifact with stable section ordering and workspace path 1`] = `
+"# Pyreel Research
+
+## Request
+
+Ship this milestone
+
+## Research
+
+RESEARCH draft body
+
+## Assumptions
+
+- _TBD_
+
+## Missing Info
+
+- _TBD_
+"
+`;
+
+exports[`executePyreelWorkflow > writes scripts artifact with stable section ordering and workspace path 1`] = `
+"# Pyreel Scripts
+
+## Request
+
+Ship this milestone
+
+## Scripts
+
+SCRIPTS draft body
+
+## Assumptions
+
+- _TBD_
+
+## Missing Info
+
+- _TBD_
+"
+`;
