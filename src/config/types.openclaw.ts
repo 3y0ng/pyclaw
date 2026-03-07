@@ -37,6 +37,15 @@ export type PyreelConfig = {
     remix?: boolean;
     export?: boolean;
   };
+  /** Write controls for mutation paths such as /pyreel apply and workflow artifact creation. */
+  writes?: {
+    /** Global write gate. */
+    enabled?: boolean;
+    /** Confirmation code TTL in seconds (default: 900). */
+    confirmationTtlSeconds?: number;
+    /** Surface-specific write flags. */
+    platforms?: Record<string, boolean>;
+  };
 };
 
 export type OpenClawConfig = {
