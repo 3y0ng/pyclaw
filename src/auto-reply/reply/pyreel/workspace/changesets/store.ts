@@ -1,19 +1,22 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  resolvePyreelWorkspaceFilePath,
+  resolvePyreelWorkspacePath,
+  resolvePyreelWorkspaceSubdirPath,
+} from "../paths.js";
 import type { ChangeSetAuditEvent, ChangeSetRecord, ChangeSetStatus } from "./model.js";
 
-const CHANGESET_ROOT = [".pyreel", "workspace", "changesets"];
-
 function changesetRoot(workspaceDir: string): string {
-  return path.join(workspaceDir, ...CHANGESET_ROOT);
+  return resolvePyreelWorkspaceSubdirPath(workspaceDir, "changesets");
 }
 
 function changesetPath(workspaceDir: string, changesetId: string): string {
-  return path.join(changesetRoot(workspaceDir), `${changesetId}.json`);
+  return resolvePyreelWorkspacePath(workspaceDir, `changesets/${changesetId}.json`);
 }
 
 function auditPath(workspaceDir: string): string {
-  return path.join(changesetRoot(workspaceDir), "audit.jsonl");
+  return resolvePyreelWorkspaceFilePath(workspaceDir, "audit.jsonl");
 }
 
 function nowIso(): string {
@@ -40,8 +43,11 @@ export async function loadChangeSet(
   try {
     const raw = await fs.readFile(changesetPath(workspaceDir, changesetId), "utf8");
     return JSON.parse(raw) as ChangeSetRecord;
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
   }
 }
 
@@ -55,8 +61,9 @@ async function saveChangeSet(workspaceDir: string, record: ChangeSetRecord): Pro
 }
 
 async function appendAuditEvent(workspaceDir: string, event: ChangeSetAuditEvent): Promise<void> {
-  await fs.mkdir(changesetRoot(workspaceDir), { recursive: true });
-  await fs.appendFile(auditPath(workspaceDir), `${JSON.stringify(event)}\n`, "utf8");
+  const auditLogPath = auditPath(workspaceDir);
+  await fs.mkdir(path.dirname(auditLogPath), { recursive: true });
+  await fs.appendFile(auditLogPath, `${JSON.stringify(event)}\n`, "utf8");
 }
 
 async function transitionStatus(params: {

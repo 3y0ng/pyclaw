@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  resolvePyreelWorkspaceRelativePath,
+  resolvePyreelWorkspaceSubdirPath,
+  resolvePyreelWorkspacePath,
+} from "./pyreel/workspace/paths.js";
 
 export type PyreelWorkflowAction = "brief" | "plan" | "research" | "scripts" | "report" | "next";
 
@@ -38,14 +43,22 @@ function fillTemplate(template: string, values: Record<string, string>): string 
   return output;
 }
 
-function normalizeArtifactSegment(value: string): string {
-  const collapsed = value.trim().replace(/\s+/g, "-");
-  return collapsed.replace(/[^a-zA-Z0-9_-]/g, "").toLowerCase();
-}
+const WORKFLOW_OUTPUT_DIR_BY_ACTION: Record<PyreelWorkflowAction, string> = {
+  brief: "briefs",
+  plan: "plans",
+  research: "research",
+  scripts: "scripts",
+  report: "reports",
+  next: "experiments",
+};
 
-function resolveArtifactName(action: PyreelWorkflowAction): string {
-  const iso = new Date().toISOString().replace(/[:.]/g, "-");
-  return `${action}-${iso}.md`;
+function formatWorkflowFileName(action: PyreelWorkflowAction, now: Date): string {
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(now.getUTCDate()).padStart(2, "0");
+  const hours = String(now.getUTCHours()).padStart(2, "0");
+  const minutes = String(now.getUTCMinutes()).padStart(2, "0");
+  return `${year}${month}${day}_${hours}${minutes}_${action}.md`;
 }
 
 async function loadTemplate(action: PyreelWorkflowAction): Promise<string> {
@@ -102,14 +115,22 @@ export async function executePyreelWorkflow(params: {
     generated_text: generatedText.trim(),
   }).trimEnd();
 
-  const artifactsDir = path.join(params.workspaceDir, ".pyreel", "artifacts");
+  const artifactsDir = resolvePyreelWorkspaceSubdirPath(
+    params.workspaceDir,
+    WORKFLOW_OUTPUT_DIR_BY_ACTION[params.action],
+  );
   await fs.mkdir(artifactsDir, { recursive: true });
-  const artifactFileName = resolveArtifactName(params.action);
-  const artifactPath = path.join(artifactsDir, normalizeArtifactSegment(artifactFileName));
+  const artifactFileName = formatWorkflowFileName(params.action, new Date());
+  const artifactPath = resolvePyreelWorkspacePath(
+    params.workspaceDir,
+    path.join(WORKFLOW_OUTPUT_DIR_BY_ACTION[params.action], artifactFileName),
+  );
   await fs.writeFile(artifactPath, `${output}\n`, "utf8");
 
-  const relativeArtifactPath =
-    path.relative(params.workspaceDir, artifactPath) || path.basename(artifactPath);
+  const relativeArtifactPath = resolvePyreelWorkspaceRelativePath(
+    params.workspaceDir,
+    artifactPath,
+  );
   return {
     summary: `Pyreel ${params.action} ready: ${relativeArtifactPath}`,
     relativeArtifactPath,

@@ -36,7 +36,7 @@ describe("pyreel changeset store", () => {
     const loaded = await loadChangeSet(workspaceDir, created.id);
     expect(loaded?.id).toBe(created.id);
 
-    const auditPath = path.join(workspaceDir, ".pyreel", "workspace", "changesets", "audit.jsonl");
+    const auditPath = `${workspaceDir}/pyreel/workspace/audit.jsonl`;
     const lines = (await fs.readFile(auditPath, "utf8")).trim().split("\n");
     expect(lines.length).toBeGreaterThanOrEqual(2);
   });
@@ -82,7 +82,7 @@ describe("pyreel changeset store", () => {
       },
     };
     await fs.writeFile(
-      path.join(workspaceDir, ".pyreel", "workspace", "changesets", `${created.id}.json`),
+      `${workspaceDir}/pyreel/workspace/changesets/${created.id}.json`,
       `${JSON.stringify(expired, null, 2)}\n`,
       "utf8",
     );
@@ -102,5 +102,12 @@ describe("pyreel changeset store", () => {
   it("exposes deterministic TTL expiry helper", () => {
     const now = new Date("2026-01-01T00:00:00.000Z");
     expect(resolveConfirmationExpiry(now, 60)).toBe("2026-01-01T00:01:00.000Z");
+  });
+
+  it("rejects traversal in changeset ids", async () => {
+    const workspaceDir = await createWorkspace();
+    await expect(loadChangeSet(workspaceDir, "../escape")).rejects.toThrow(
+      "relativePath cannot contain '..'",
+    );
   });
 });
