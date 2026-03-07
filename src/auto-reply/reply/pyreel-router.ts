@@ -27,6 +27,7 @@ import {
 import {
   confirmAndApplyChangeSet,
   createDryRunChangeSet,
+  type PyreelPlatformWriteAdapter,
 } from "./pyreel/workspace/changesets/store.js";
 import {
   allowProactiveTarget,
@@ -88,6 +89,56 @@ const resolveInboundText = (ctx: FinalizedMsgContext): string => {
 
 function resolveSurface(ctx: FinalizedMsgContext): string {
   return (ctx.Surface ?? ctx.Provider ?? "unknown").trim().toLowerCase();
+}
+
+function parseBooleanEnvFlag(raw: string | undefined): boolean | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false") {
+    return false;
+  }
+  return undefined;
+}
+
+function resolveRequestPlatforms(request: string): Array<"meta" | "tiktok" | "google"> {
+  const normalized = request.toLowerCase();
+  const platforms: Array<"meta" | "tiktok" | "google"> = [];
+  if (/\b(meta|facebook|instagram)\b/.test(normalized)) {
+    platforms.push("meta");
+  }
+  if (/\b(tiktok|tt)\b/.test(normalized)) {
+    platforms.push("tiktok");
+  }
+  if (/\b(google|googleads|adwords)\b/.test(normalized)) {
+    platforms.push("google");
+  }
+  return platforms;
+}
+
+function envWriteEnabledForPlatforms(platforms: Array<"meta" | "tiktok" | "google">): boolean {
+  const globalEnabled = parseBooleanEnvFlag(process.env.PYREEL_ENABLE_WRITES) ?? true;
+  if (!globalEnabled) {
+    return false;
+  }
+
+  for (const platform of platforms) {
+    const key =
+      platform === "meta"
+        ? "PYREEL_ENABLE_META_WRITES"
+        : platform === "tiktok"
+          ? "PYREEL_ENABLE_TIKTOK_WRITES"
+          : "PYREEL_ENABLE_GOOGLE_WRITES";
+    if (!(parseBooleanEnvFlag(process.env[key]) ?? true)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function pyreelWriteEnabled(cfg: OpenClawConfig, ctx: FinalizedMsgContext): boolean {
@@ -416,6 +467,9 @@ export async function routePyreelMessage(params: {
   workspaceDir?: string;
   restrictedModelRunner?: RestrictedPyreelModelRunner;
   pyreelAdsConnectors?: PyreelAdsConnector[];
+  pyreelPlatformWriteAdapters?: Partial<
+    Record<"meta" | "tiktok" | "google", PyreelPlatformWriteAdapter>
+  >;
 }): Promise<PyreelRouterDecision> {
   const { ctx, cfg } = params;
   if (cfg.pyreel?.mode !== true) {
@@ -749,6 +803,15 @@ export async function routePyreelMessage(params: {
         .filter((token) => token !== "--auto-apply")
         .join(" ")
         .trim();
+      if (!envWriteEnabledForPlatforms(resolveRequestPlatforms(autoApplyRequest))) {
+        return {
+          path: "block",
+          matchedCommand: "apply",
+          deniedReason: "write_disabled",
+          reason: "pyreel_mode_enforced",
+          replyText: "Pyreel apply is write-disabled by PYREEL_ENABLE_* gate.",
+        };
+      }
       if (!isLowRiskAutoApplyRequest(autoApplyRequest)) {
         return {
           path: "block",
@@ -769,6 +832,8 @@ export async function routePyreelMessage(params: {
         workspaceDir,
         changesetId: created.id,
         confirmationCode: created.confirmation?.code ?? "",
+        autoApply: true,
+        platformAdapters: params.pyreelPlatformWriteAdapters,
       });
 
       if (!applyResult.ok) {
@@ -794,6 +859,15 @@ export async function routePyreelMessage(params: {
         .filter((token) => token !== "--dry-run")
         .join(" ")
         .trim();
+      if (!envWriteEnabledForPlatforms(resolveRequestPlatforms(dryRunRequest))) {
+        return {
+          path: "block",
+          matchedCommand: "apply",
+          deniedReason: "write_disabled",
+          reason: "pyreel_mode_enforced",
+          replyText: "Pyreel apply is write-disabled by PYREEL_ENABLE_* gate.",
+        };
+      }
       const created = await createDryRunChangeSet({
         workspaceDir,
         request: dryRunRequest || "No request provided",

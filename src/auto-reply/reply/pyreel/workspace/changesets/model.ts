@@ -27,6 +27,13 @@ export type ChangeSetRecord = {
   createdAt: string;
   updatedAt: string;
   dryRunRequest: string;
+  analysis?: {
+    riskLevel: "low" | "medium" | "high";
+    operationCount: number;
+    budgetDelta: number;
+    platforms: Array<"meta" | "tiktok" | "google">;
+    ambiguous: boolean;
+  };
   confirmation?: {
     code: string;
     issuedAt: string;

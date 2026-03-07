@@ -9,6 +9,32 @@ import { buildTestCtx } from "./test-ctx.js";
 
 const TEMP_DIRS: string[] = [];
 
+async function withEnv(
+  vars: Record<string, string | undefined>,
+  run: () => Promise<void>,
+): Promise<void> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(vars)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    await run();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 async function createWorkspace(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pyreel-router-"));
   TEMP_DIRS.push(dir);
@@ -386,6 +412,68 @@ describe("routePyreelMessage", () => {
     expect(decision.path).toBe("block");
     expect(decision.matchedCommand).toBe("apply");
     expect(decision.deniedReason).toBe("write_disabled");
+  });
+
+  it("enforces env global write gate for /pyreel apply", async () => {
+    await withEnv({ PYREEL_ENABLE_WRITES: "0" }, async () => {
+      const workspaceDir = await createWorkspace();
+      await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+        JSON.stringify(
+          { version: 1, grants: [{ identity: "slack:approver", role: "approver" }] },
+          null,
+          2,
+        ),
+      );
+      const decision = await routePyreelMessage({
+        ctx: buildTestCtx({
+          BodyForCommands: "/pyreel apply --dry-run update meta budget +5",
+          Surface: "slack",
+          SenderId: "approver",
+        }),
+        cfg: { pyreel: { mode: true } } as OpenClawConfig,
+        workspaceDir,
+      });
+
+      expect(decision.path).toBe("block");
+      expect(decision.matchedCommand).toBe("apply");
+      expect(decision.deniedReason).toBe("write_disabled");
+      if (decision.path === "block") {
+        expect(decision.replyText).toContain("PYREEL_ENABLE");
+      }
+    });
+  });
+
+  it("enforces env platform write gate for /pyreel apply", async () => {
+    await withEnv({ PYREEL_ENABLE_META_WRITES: "0" }, async () => {
+      const workspaceDir = await createWorkspace();
+      await fs.mkdir(path.join(workspaceDir, "pyreel", "workspace"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspaceDir, "pyreel", "workspace", "acl.json"),
+        JSON.stringify(
+          { version: 1, grants: [{ identity: "slack:approver", role: "approver" }] },
+          null,
+          2,
+        ),
+      );
+      const decision = await routePyreelMessage({
+        ctx: buildTestCtx({
+          BodyForCommands: "/pyreel apply --dry-run pause meta campaigns",
+          Surface: "slack",
+          SenderId: "approver",
+        }),
+        cfg: { pyreel: { mode: true } } as OpenClawConfig,
+        workspaceDir,
+      });
+
+      expect(decision.path).toBe("block");
+      expect(decision.matchedCommand).toBe("apply");
+      expect(decision.deniedReason).toBe("write_disabled");
+      if (decision.path === "block") {
+        expect(decision.replyText).toContain("PYREEL_ENABLE");
+      }
+    });
   });
 
   it("supports dry-run plus confirmation apply flow", async () => {
